@@ -1,5 +1,5 @@
 # Optional research/training dependencies; not needed for Raspberry Pi operation.
-lightgbm==4.1.0
+lightgbm==4.7.0
 pandas==2.2.2
 scikit-learn==1.5.1
 scikit-image==0.23.2
