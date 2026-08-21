@@ -19,7 +19,8 @@ api_base_url: "https://soil-moisture-pages-ddl.pages.dev"
 api_key: ""
 
 # デフォルトのキットID
-default_kit_id: "universal_board_wiring"
+# 登録済み: shodoshima-field-01 (処理区/常時冠水), shodoshima-field-02 (未処理区/冠水無し)
+default_kit_id: "shodoshima-field-01"
 ```
 
 ### 2. CLI で土壌水分を確認
@@ -214,9 +215,16 @@ CLI/GUIの解析結果に以下のフィールドが追加される:
 
 **使用例:**
 ```
-https://soil-moisture-pages-ddl.pages.dev/api/sensor/latest?kit_id=universal_board_wiring
-https://soil-moisture-pages-ddl.pages.dev/api/sensor/history?kit_id=universal_board_wiring&hours=24
+https://soil-moisture-pages-ddl.pages.dev/api/sensor/latest?kit_id=shodoshima-field-01
+https://soil-moisture-pages-ddl.pages.dev/api/sensor/history?kit_id=shodoshima-field-01&hours=24
+https://soil-moisture-pages-ddl.pages.dev/api/sensor/stats?kit_id=shodoshima-field-01&hours=24
 ```
+
+**登録済みキット:**
+| キットID | 名前 | 説明 |
+|---------|------|------|
+| `shodoshima-field-01` | １ 処理区（常時冠水） | 常時灌水されている区画 |
+| `shodoshima-field-02` | ２ 未処理区（冠水無し） | 灌水されていない区画 |
 
 ## Python API
 

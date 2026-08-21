@@ -8,7 +8,8 @@ api_base_url: "https://soil-moisture-pages-ddl.pages.dev"
 api_key: ""
 
 # Default kit ID to query
-default_kit_id: "universal_board_wiring"
+# 登録済みキット: shodoshima-field-01 (処理区/常時冠水), shodoshima-field-02 (未処理区/冠水無し)
+default_kit_id: "shodoshima-field-01"
 
 # Network timeout in seconds
 timeout: 10
