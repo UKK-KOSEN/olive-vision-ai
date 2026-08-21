@@ -15,7 +15,7 @@ from src.runtime import (Analyzer, Store, VideoAnalyzer, build_logger, capture_c
                          explain_detection, load_runtime_config, save_observation,
                          analyze_health_trend, _frame_position, _fruit_why,
                          FRUIT_SIGNAL_THRESHOLDS, DEFAULTS as DEFAULTS_REF)
-from src.cli_ui import (Spinner, ProgressBar, panel, rule, bold, dim, cyan,
+from src.cli_ui import (Spinner, ProgressBar, panel, bold, dim, cyan,
                         green, yellow, red, accent_ok, accent_warn, accent_err,
                         countup_line)
 
@@ -709,7 +709,7 @@ def analyze_video_cli(args):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
     cap.release()
     def on_progress(done, total, _result):
-        bar.update(done, note=f"tracked frames")
+        bar.update(done, note="tracked frames")
     summary = va.analyze_video(str(path), out_dir, frame_interval=args.interval,
                                progress_callback=on_progress, persist=True)
     bar.finish()
@@ -1453,7 +1453,7 @@ def gui(args):
             return
         img = cv2.imread(path)
         if img is None:
-            write_log(f"ERROR: Cannot read image — file may be corrupt or unsupported format")
+            write_log("ERROR: Cannot read image — file may be corrupt or unsupported format")
             write_log("HINT: Use .jpg, .png, or .bmp files.")
             return
         nonlocal current_image_bgr

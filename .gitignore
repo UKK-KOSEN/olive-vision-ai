@@ -23,6 +23,8 @@ data/database/gui_settings.json
 outputs/
 *.jpg
 *.png
+*.pptx
+*.docx
 
 # Temp files
 ~$*

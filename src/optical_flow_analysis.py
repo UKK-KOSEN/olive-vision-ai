@@ -4,7 +4,7 @@ OliveVision AI - オプティカルフロー解析モジュール（成長速度
 
 import cv2
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 import logging
 
 

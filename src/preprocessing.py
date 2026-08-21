@@ -4,7 +4,7 @@ OliveVision AI - 画像前処理モジュール
 
 import cv2
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict
 from . import utils
 
 
