@@ -1,0 +1,58 @@
+# OliveVision AI Configuration
+
+# 画像処理設定
+preprocessing:
+  gaussian_blur_kernel: 5
+  clahe_clip_limit: 2.0
+  clahe_grid_size: 8
+  gamma_correction: 1.2
+  
+# 葉検出設定 (HSV範囲)
+leaf_detection:
+  hue_range: [35, 95]
+  saturation_range: [30, 255]
+  value_range: [30, 255]
+  min_area: 50
+  max_area: 50000
+  circularity_threshold: 0.3
+  solidity_threshold: 0.5
+  
+# 実検出設定 (HSV範囲)
+fruit_detection:
+  hue_range: [0, 180]
+  saturation_range: [50, 255]
+  value_range: [50, 255]
+  min_area: 30
+  max_area: 10000
+  circularity_threshold: 0.7
+  
+# 色解析設定
+color_analysis:
+  use_rgb: true
+  use_hsv: true
+  use_lab: true
+  use_grayscale: true
+  
+# 機械学習設定
+machine_learning:
+  model_type: "lightgbm"
+  n_estimators: 100
+  max_depth: 7
+  learning_rate: 0.1
+  num_leaves: 31
+  
+# 出力設定
+output:
+  format: ["csv", "xlsx", "json"]
+  save_images: true
+  save_videos: false
+  
+# データベース
+database:
+  type: "sqlite"
+  path: "data/database/olive_data.db"
+  
+# ログ設定
+logging:
+  level: "INFO"
+  file: "outputs/olive_analysis.log"

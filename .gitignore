@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+data/database/*.db
+data/database/gui_settings.json
+outputs/
+*.jpg
+*.png
+
+# Temp files
+~$*
+
+# Config overrides (user-specific)
+config/runtime.local.yaml

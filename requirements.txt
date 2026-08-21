@@ -1,0 +1,4 @@
+# Production runtime.  ML/research dependencies are in requirements-ml.txt.
+numpy>=1.23,<3
+opencv-python-headless>=4.7,<5
+PyYAML>=6,<7
