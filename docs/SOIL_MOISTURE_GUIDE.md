@@ -13,13 +13,13 @@ nano config/soil_moisture.yaml
 
 ```yaml
 # API エンドポイント（Cloudflare Pages）
-api_base_url: "https://soil-moisture-final.pages.dev"
+api_base_url: "https://soil-moisture-pages-ddl.pages.dev"
 
 # APIキー（必要な場合のみ）
 api_key: ""
 
 # デフォルトのキットID
-default_kit_id: "default"
+default_kit_id: "universal_board_wiring"
 ```
 
 ### 2. CLI で土壌水分を確認
@@ -115,23 +115,37 @@ python olivevision.py gui
 - **ON**: 画像解析時に土壌水分データを自動取得し、健康評価に統合
 - **OFF**: 画像解析のみ実行（土壌水分データなし）
 
-## 健康評価への統合
+## 評価基準
 
-### 仕組み
+### 土壌水分の状態判定
 
-1. 画像解析時に拍照時刻を取得
-2. 同じ時間帯の土壌水分データをAPIから取得
-3. 土壌水分のリスクレベルを判定
-4. 既存の視覚的健康スコアと組み合わせて総合スコアを算出
+画像解析時に拍照時刻と同じ時間帯の土壌水分を取得し、以下の基準で判定する。
 
-### リスクレベル
+| 状態 | 平均水分 (%) | 色 | 説明 |
+|------|-------------|-----|------|
+| **DRY** | < 30 | 赤 | 水分不足。灌水が必要 |
+| **OPTIMAL** | 30 - 70 | 緑 | 適切な水分状態 |
+| **WET** | > 70 | 黄 | 過湿。排水・通気を確認 |
 
-| レベル | 土壌水分 (avg) | スコア | 説明 |
-|--------|---------------|--------|------|
-| critical | < 20% | 0.1 | 深刻な水分不足 |
-| high | 20-30% または > 75% | 0.3 | 水分不足/過湿のリスク |
-| moderate | 30-40% または 65-75% | 0.6-0.7 | やや水分不足/過湿 |
-| normal | 40-65% | 1.0 | 適切な水分 |
+### 健康リスク評価
+
+土壌水分から算出するリスクレベル。視覚的解析（葉の色・シワ・巻き込み等）と組み合わせて総合判定する。
+
+| リスク | 平均水分 (%) | 温度条件 | スコア | 緩和策 |
+|--------|-------------|---------|--------|--------|
+| **critical** | < 20 | — | 0.1 | 直ちに灌水。日陰への移動を検討 |
+| **high** | 20-30 | — | 0.3 | 灌水計画の見直し |
+| **high** | > 75 | — | 0.3 | 排水確認、灌水量の削減 |
+| **moderate** | 30-40 | — | 0.6 | 状態の継続モニタリング |
+| **moderate** | 65-75 | — | 0.7 | 灌水頻度の調整 |
+| **normal** | 40-65 | — | 1.0 | この状態を維持 |
+
+**温度による追加ペナルティ:**
+
+| 条件 | スコア乗数 | 説明 |
+|------|-----------|------|
+| 気温 > 35°C | ×0.8 | 高温ストレス |
+| 気温 < 5°C | ×0.7 | 低温ストレス |
 
 ### 総合スコアの算出
 
@@ -139,9 +153,70 @@ python olivevision.py gui
 総合スコア = 視覚スコア × (1 - 土壌水分重み) + 土壌水分スコア × 土壌水分重み
 ```
 
-- 視覚スコア: 既存の健康評価（葉の色、シワ、巻き込み等）
-- 土壌水分スコア: 土壌水分の状態から算出
-- 重み: リスクレベルに応じて自動調整（0-30%）
+- **視覚スコア**: 既存の健康評価（葉の色、シワ、巻き込み、樹冠密度等）
+- **土壌水分スコア**: 上記リスクテーブルから算出
+- **重み**: リスクレベルに応じて自動調整
+
+| リスクレベル | 土壌水分重み | 視覚重み |
+|-------------|------------|---------|
+| normal | 10% | 90% |
+| moderate | 30% | 70% |
+| high | 30% | 70% |
+| critical | 30% | 70% |
+
+**例:**
+- 視覚スコア=0.8, 土壌水分スコア=0.3 (high risk), 重み=30%
+- 総合スコア = 0.8 × 0.7 + 0.3 × 0.3 = **0.65**
+
+### 出力される評価結果
+
+CLI/GUIの解析結果に以下のフィールドが追加される:
+
+```json
+{
+  "health_assessment": {
+    "visual_health_score": 0.800,      // 視覚的健康スコア
+    "moisture_health_score": 1.000,     // 土壌水分スコア
+    "moisture_weight": 0.10,            // 土壌水分の重み
+    "combined_health_score": 0.820,     // 総合スコア
+    "moisture_risk": "normal",          // リスクレベル
+    "moisture_message": "適切な水分 (avg 52%)",  // メッセージ
+    "flags": []                         // フラグ (soil_moisture_high等)
+  },
+  "soil_moisture": {
+    "available": true,
+    "status": "optimal",
+    "average_percent": 52.0,
+    "sensor1_percent": 50.0,
+    "sensor2_percent": 54.0,
+    "temperature": 25.0,
+    "humidity": 60.0
+  }
+}
+```
+
+### フラグ一覧
+
+| フラグ | 意味 | 対応 |
+|--------|------|------|
+| `soil_moisture_critical` | 深刻な水分不足 | 直ちに灌水 |
+| `soil_moisture_high` | 水分不足/過湿のリスク | 灌水計画の見直し |
+| `soil_moisture_moderate` | やや水分不足/過湿 | 状態の継続モニタリング |
+
+### API エンドポイント
+
+| エンドポイント | 説明 | パラメータ |
+|---------------|------|-----------|
+| `/api/sensor/latest` | 最新の測定値 | `kit_id` |
+| `/api/sensor/history` | 過去の測定履歴 | `kit_id`, `hours`, `limit` |
+| `/api/sensor/stats` | 統計情報 | `kit_id`, `hours` |
+| `/api/sensor/calibration` | キャリブレーション値 | `kit_id` |
+
+**使用例:**
+```
+https://soil-moisture-pages-ddl.pages.dev/api/sensor/latest?kit_id=universal_board_wiring
+https://soil-moisture-pages-ddl.pages.dev/api/sensor/history?kit_id=universal_board_wiring&hours=24
+```
 
 ## Python API
 

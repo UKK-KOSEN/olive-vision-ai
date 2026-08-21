@@ -2,13 +2,13 @@
 # UKK-KOSEN Soil Monitoring System
 
 # API endpoint (Cloudflare Pages)
-api_base_url: "https://soil-moisture-final.pages.dev"
+api_base_url: "https://soil-moisture-pages-ddl.pages.dev"
 
 # API key for authentication (set in secrets or environment)
 api_key: ""
 
 # Default kit ID to query
-default_kit_id: "default"
+default_kit_id: "universal_board_wiring"
 
 # Network timeout in seconds
 timeout: 10
@@ -23,11 +23,29 @@ olive_integration:
   weight: 0.3
 
   # Moisture thresholds for olive trees (percent)
+  # DRY:   < 30%  ->灌水が必要
+  # OPTIMAL: 30-70% -> 適切な水分状態
+  # WET:   > 70%  -> 排水・通気を確認
   thresholds:
-    dry: 20        # Below this = water stress risk
-    optimal_low: 30
-    optimal_high: 60
-    wet: 70        # Above this = overwatering risk
+    dry: 20        # critical: 直ちに灌水
+    dry_high: 30   # high: 灌水計画の見直し
+    moderate_low: 30   # moderate: 状態の継続モニタリング
+    moderate_high: 40  # moderate: 状態の継続モニタリング
+    optimal_low: 40    # normal: この状態を維持
+    optimal_high: 65   # normal: この状態を維持
+    wet: 70        # high: 排水確認、灌水量の削減
+    wet_extreme: 75    # critical: 直ちに排水
+
+  # Temperature penalties
+  temp_high: 35   # > 35°C: 高温ストレス (score × 0.8)
+  temp_low: 5     # < 5°C: 低温ストレス (score × 0.7)
+
+  # Risk levels and scores
+  risk_scores:
+    critical: 0.1  # 深刻な水分不足/過湿
+    high: 0.3      # 水分不足/過湿のリスク
+    moderate: 0.6  # やや水分不足/過湿
+    normal: 1.0    # 適切な水分
 
   # Status labels
   status_labels:
