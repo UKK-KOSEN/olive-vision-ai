@@ -156,6 +156,48 @@ class SoilMoistureClient:
         kit_id = kit_id or self.default_kit_id
         return self._get("/api/sensor/calibration", {"kit_id": kit_id})
 
+    def get_moisture_at_time(
+        self,
+        target_time: datetime,
+        kit_id: Optional[str] = None,
+        window_hours: float = 2.0,
+    ) -> Optional[dict]:
+        """
+        Get soil moisture data closest to a specific time.
+
+        Args:
+            target_time: The timestamp to match (e.g. photo/video capture time)
+            kit_id: Kit identifier
+            window_hours: How many hours around target_time to search
+
+        Returns:
+            Closest sensor data record or None
+        """
+        kit_id = kit_id or self.default_kit_id
+        start = target_time - timedelta(hours=window_hours)
+        end = target_time + timedelta(hours=window_hours)
+        hours_back = max(1, int((datetime.now() - start).total_seconds() / 3600) + 1)
+        records = self.get_history(kit_id=kit_id, hours=hours_back, limit=200)
+        if not records:
+            return None
+        best = None
+        best_diff = timedelta(hours=999)
+        for rec in records:
+            ts_str = rec.get("measured_at") or rec.get("timestamp") or ""
+            if not ts_str:
+                continue
+            try:
+                rec_time = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if rec_time.tzinfo is not None:
+                    rec_time = rec_time.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                continue
+            diff = abs(rec_time - target_time)
+            if diff < best_diff:
+                best_diff = diff
+                best = rec
+        return best
+
     def clear_cache(self) -> None:
         """Clear the response cache."""
         self._cache.clear()
@@ -250,19 +292,88 @@ def get_moisture_status(data: Optional[dict]) -> str:
         return "wet"
 
 
+def assess_moisture_health(data: Optional[dict]) -> dict:
+    """
+    Assess soil moisture impact on olive tree health.
+
+    Args:
+        data: Sensor data dict (from API or get_moisture_at_time)
+
+    Returns:
+        Health assessment dict with risk level, message, and weight factor
+    """
+    if data is None:
+        return {"risk": "unknown", "message": "土壌水分データなし", "weight": 0.0, "score": 0.5}
+
+    s1 = data.get("sensor1_moisture_percent")
+    s2 = data.get("sensor2_moisture_percent")
+    values = [v for v in [s1, s2] if v is not None]
+    if not values:
+        return {"risk": "unknown", "message": "センサー値なし", "weight": 0.0, "score": 0.5}
+
+    avg = sum(values) / len(values)
+    temp = data.get("temperature")
+
+    risk = "normal"
+    score = 1.0
+    messages = []
+
+    if avg < 20:
+        risk = "critical"
+        score = 0.1
+        messages.append("深刻な水分不足 (avg {:.0f}%)".format(avg))
+    elif avg < 30:
+        risk = "high"
+        score = 0.3
+        messages.append("水分不足のリスク (avg {:.0f}%)".format(avg))
+    elif avg < 40:
+        risk = "moderate"
+        score = 0.6
+        messages.append("やや水分不足 (avg {:.0f}%)".format(avg))
+    elif avg <= 65:
+        risk = "normal"
+        score = 1.0
+        messages.append("適切な水分 (avg {:.0f}%)".format(avg))
+    elif avg <= 75:
+        risk = "moderate"
+        score = 0.7
+        messages.append("やや過湿 (avg {:.0f}%)".format(avg))
+    else:
+        risk = "high"
+        score = 0.3
+        messages.append("過湿のリスク (avg {:.0f}%)".format(avg))
+
+    if temp is not None and temp > 35:
+        score *= 0.8
+        messages.append("高温ストレス ({:.0f}C)".format(temp))
+    elif temp is not None and temp < 5:
+        score *= 0.7
+        messages.append("低温ストレス ({:.0f}C)".format(temp))
+
+    return {
+        "risk": risk,
+        "message": " / ".join(messages),
+        "weight": 0.3 if risk != "normal" else 0.1,
+        "score": round(score, 2),
+        "average_percent": round(avg, 1),
+        "sensor1_percent": s1,
+        "sensor2_percent": s2,
+        "temperature": temp,
+    }
+
+
 def get_moisture_for_olive_analysis(
     client: Optional[SoilMoistureClient] = None,
     kit_id: Optional[str] = None,
+    target_time: Optional[datetime] = None,
 ) -> dict:
     """
     Get soil moisture data formatted for OliveVision AI integration.
 
-    This function provides soil moisture data that can be added to
-    olive tree analysis results without modifying the core analysis code.
-
     Args:
         client: SoilMoistureClient instance (creates new one if None)
         kit_id: Kit identifier
+        target_time: If provided, fetch moisture data closest to this time
 
     Returns:
         Dictionary with soil moisture data suitable for integration
@@ -271,14 +382,19 @@ def get_moisture_for_olive_analysis(
         client = SoilMoistureClient()
 
     try:
-        latest = client.get_latest(kit_id)
+        if target_time is not None:
+            latest = client.get_moisture_at_time(target_time, kit_id)
+        else:
+            latest = client.get_latest(kit_id)
         stats = client.get_stats(kit_id, hours=24)
         status = get_moisture_status(latest)
+        health = assess_moisture_health(latest)
 
         result = {
             "soil_moisture": {
                 "available": latest is not None,
                 "status": status,
+                "health": health,
                 "latest": latest,
                 "stats_24h": stats,
                 "source": "ukk-kosen/soil-moisture",
@@ -304,6 +420,7 @@ def get_moisture_for_olive_analysis(
             "soil_moisture": {
                 "available": False,
                 "status": "error",
+                "health": {"risk": "unknown", "message": str(e), "weight": 0.0, "score": 0.5},
                 "error": str(e),
                 "source": "ukk-kosen/soil-moisture",
             }

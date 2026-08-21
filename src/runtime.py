@@ -2239,6 +2239,43 @@ def _compute_analysis_details(leaf_objects, fruit_objects, image_bgr,
     }
 
 
+def integrate_soil_moisture(result: dict, soil_data: dict) -> dict:
+    """Add soil moisture data to an analysis result and update health assessment.
+
+    Args:
+        result: Analysis result dict from Analyzer.analyze()
+        soil_data: Soil moisture data from get_moisture_for_olive_analysis()
+
+    Returns:
+        Updated result dict with soil_moisture and health_assessment fields
+    """
+    sm = soil_data.get("soil_moisture", {})
+    result["soil_moisture"] = sm
+    health = sm.get("health", {})
+    ad = result.get("analysis_details", {})
+    stress = ad.get("stress", {})
+    visual_score = stress.get("overall_health_score", 0.5)
+    moisture_score = health.get("score", 0.5)
+    moisture_weight = health.get("weight", 0.0)
+    combined = round(visual_score * (1.0 - moisture_weight) + moisture_score * moisture_weight, 3)
+    risk = health.get("risk", "unknown")
+    flags = []
+    if risk in ("critical", "high"):
+        flags.append(f"soil_moisture_{risk}")
+    if risk == "moderate":
+        flags.append("soil_moisture_moderate")
+    result["health_assessment"] = {
+        "visual_health_score": visual_score,
+        "moisture_health_score": moisture_score,
+        "moisture_weight": moisture_weight,
+        "combined_health_score": combined,
+        "moisture_risk": risk,
+        "moisture_message": health.get("message", ""),
+        "flags": flags,
+    }
+    return result
+
+
 def _avg_leaf_hue_norm(hues):
     """Normalise average leaf hue to a green-centred0..1 range.
 

@@ -13,8 +13,12 @@ import cv2
 import numpy as np
 from src.runtime import (Analyzer, Store, VideoAnalyzer, build_logger, capture_camera,
                          explain_detection, load_runtime_config, save_observation,
-                         analyze_health_trend, _frame_position, _fruit_why,
+                         analyze_health_trend, integrate_soil_moisture,
+                         _frame_position, _fruit_why,
                          FRUIT_SIGNAL_THRESHOLDS, DEFAULTS as DEFAULTS_REF)
+from src.soil_moisture import (SoilMoistureClient, get_moisture_for_olive_analysis,
+                               format_moisture_report, get_moisture_status,
+                               assess_moisture_health)
 from src.cli_ui import (Spinner, ProgressBar, panel, bold, dim, cyan,
                         green, yellow, red, accent_ok, accent_warn, accent_err,
                         countup_line)
@@ -50,6 +54,24 @@ def _print_summary(result):
     print(f"  {bold('Fruits')}   {fruits}" + (f"  ({accent_warn(str(wr))} wrinkled)" if wr else ""))
     print(f"  {bold('Green')}    {green_cov:.1f}%  (leaf stage: {stage})")
     print(f"  {bold('Maturity')} {mat}")
+
+def _print_soil_health(health):
+    """Print soil moisture health assessment."""
+    risk = health.get("moisture_risk", "unknown")
+    msg = health.get("moisture_message", "")
+    combined = health.get("combined_health_score", 0.5)
+    visual = health.get("visual_health_score", 0.5)
+    moisture = health.get("moisture_health_score", 0.5)
+    weight = health.get("moisture_weight", 0.0)
+    if risk == "unknown":
+        return
+    parts = []
+    parts.append(f"  {bold('Soil')}     {_risk_color(risk)}  {dim(msg)}")
+    parts.append(f"  {bold('Scores')}   visual={visual:.2f}  moisture={moisture:.2f}  "
+                 f"combined={green(f'{combined:.2f}') if combined >= 0.6 else yellow(f'{combined:.2f}')}"
+                 f"  (weight={weight:.0%})")
+    print("\n".join(parts))
+
 
 def _print_verdict(result):
     """Colour-coded health verdict drawn from the result."""
@@ -253,10 +275,21 @@ def analyze_file(args):
                                           args.output, str(path))
         logger.info("Saved annotation: %s", output)
         logger.info("Stored observation in %s", args.database)
+    if not getattr(args, "no_soil_moisture", False):
+        try:
+            from datetime import datetime as _dt
+            obs_time = _dt.fromisoformat(result.get("observed_at", ""))
+            soil_data = get_moisture_for_olive_analysis(target_time=obs_time)
+            result = integrate_soil_moisture(result, soil_data)
+            logger.info("Integrated soil moisture data")
+        except Exception as exc:
+            logger.info("Soil moisture integration skipped: %s", exc)
     _animate_counts(result)
     print(panel(f"Analysis of {path.name}",
                 _print_summary_body(result)))
     _print_verdict(result)
+    if result.get("health_assessment"):
+        _print_soil_health(result["health_assessment"])
     if args.explain:
         explain(args, result)
     if args.diag:
@@ -334,9 +367,20 @@ def capture(args):
         _error(f"Camera {args.camera} failed: {exc}",
                hint="Check that the camera is connected and not in use by another app. "
                     "Try --camera 1 for the second camera.")
+    if not getattr(args, "no_soil_moisture", False):
+        try:
+            from datetime import datetime as _dt
+            obs_time = _dt.fromisoformat(result.get("observed_at", ""))
+            soil_data = get_moisture_for_olive_analysis(target_time=obs_time)
+            result = integrate_soil_moisture(result, soil_data)
+            logger.info("Integrated soil moisture data")
+        except Exception as exc:
+            logger.info("Soil moisture integration skipped: %s", exc)
     print(panel(f"Capture from camera {args.camera}",
                 _print_summary_body(result)))
     _print_verdict(result)
+    if result.get("health_assessment"):
+        _print_soil_health(result["health_assessment"])
     if args.explain:
         explain(args, result)
     if args.diag:
@@ -466,11 +510,9 @@ def status(args):
     if not rows:
         print("  No observations yet.")
         return
-    # Column widths
     for row in rows:
         gc = row["green_coverage"]
         tid = row.get("tree_id", "")
-        # Source badge
         src = row["source"]
         if src.startswith("video"):
             src_badge = yellow(f"{'VID':>5}")
@@ -478,17 +520,21 @@ def status(args):
             src_badge = cyan(f"{'CAM':>5}")
         else:
             src_badge = green(f"{'IMG':>5}")
-        # Date (shortened)
         dt = row["observed_at"][:16].replace("T", " ")
-        # Tree tag
         tree_tag = f" {cyan(tid):>12}" if tid else ""
-        # Counts with colour
         lvs = row["leaf_count"]
         fts = row["fruit_count"]
         grn = gc
+        sm = row.get("soil_moisture", "")
+        sm_tag = ""
+        if isinstance(sm, dict) and sm.get("available"):
+            sm_status = sm.get("status", "")
+            sm_avg = sm.get("average_percent")
+            if sm_status and sm_avg is not None:
+                sm_tag = f"  {_moisture_badge(sm_status)}={green(f'{sm_avg:.0f}%')}"
         print(f"  {dim(dt)}  {src_badge}{tree_tag}  "
               f"L={cyan(str(lvs).rjust(3))}  F={green(str(fts).rjust(3))}  "
-              f"G={yellow(f'{grn:.1f}%')}")
+              f"G={yellow(f'{grn:.1f}%')}{sm_tag}")
 
 def export(args):
     csv_path = Path(args.csv)
@@ -981,6 +1027,23 @@ def gui(args):
     diag_scroll.pack(side="right", fill="y")
     diag_text.pack(fill="both", expand=True)
 
+    # --- Soil Moisture tab (Text + toggle)
+    soil_frame = tk.Frame(notebook, bg=SURFACE)
+    notebook.add(soil_frame, text="  Soil Moisture  ")
+    soil_text = tk.Text(soil_frame, state="disabled", wrap="word",
+                        font=("Cascadia Code", 9), bg=SURFACE, fg=TEXT,
+                        insertbackground=TEXT, borderwidth=0, highlightthickness=0)
+    soil_scroll = ttk.Scrollbar(soil_frame, command=soil_text.yview)
+    soil_text.configure(yscrollcommand=soil_scroll.set)
+    soil_scroll.pack(side="right", fill="y")
+    soil_text.pack(fill="both", expand=True)
+
+    # Soil moisture on/off toggle (in toolbar)
+    soil_enabled = tk.BooleanVar(value=True)
+    btn_soil = ttk.Checkbutton(toolbar, text="  Soil Moisture  ", variable=soil_enabled,
+                                style="TCheckbutton")
+    btn_soil.pack(side="left", padx=3)
+
     # ---- RIGHT: Parameter panel (card)
     param_frame = ttk.LabelFrame(right, text=" Detection Parameters ", style="Card.TLabelframe")
     param_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
@@ -1203,6 +1266,85 @@ def gui(args):
             diag_text.configure(state="disabled")
         except Exception:
             pass
+        try:
+            _update_soil_tab(r)
+        except Exception:
+            pass
+
+    def _update_soil_tab(r):
+        """Update the Soil Moisture tab with analysis result data."""
+        soil_text.configure(state="normal")
+        soil_text.delete("1.0", "end")
+        sm = r.get("soil_moisture", {})
+        ha = r.get("health_assessment", {})
+        lines = []
+        lines.append("SOIL MOISTURE INTEGRATION")
+        lines.append("=" * 50)
+        if not sm.get("available", False):
+            lines.append("")
+            lines.append("Status: Data not available")
+            err = sm.get("error")
+            if err:
+                lines.append(f"Error: {err}")
+            lines.append("")
+            lines.append("Check config/soil_moisture.yaml")
+            lines.append("and network connection.")
+        else:
+            status = sm.get("status", "unknown")
+            lines.append(f"Status: {status.upper()}")
+            lines.append(f"Source: {sm.get('source', '?')}")
+            lines.append("")
+            lines.append("--- Moisture Levels ---")
+            s1 = sm.get("sensor1_percent")
+            s2 = sm.get("sensor2_percent")
+            avg = sm.get("average_percent")
+            if s1 is not None:
+                lines.append(f"  Sensor 1: {s1:.1f}%")
+            if s2 is not None:
+                lines.append(f"  Sensor 2: {s2:.1f}%")
+            if avg is not None:
+                lines.append(f"  Average:  {avg:.1f}%")
+            lines.append("")
+            lines.append("--- Environment ---")
+            temp = sm.get("temperature")
+            hum = sm.get("humidity")
+            if temp is not None:
+                lines.append(f"  Temperature: {temp:.1f} C")
+            if hum is not None:
+                lines.append(f"  Humidity:    {hum:.1f}%")
+            lines.append("")
+            lines.append("--- Health Assessment ---")
+            risk = ha.get("moisture_risk", "unknown")
+            msg = ha.get("moisture_message", "")
+            lines.append(f"  Risk:    {risk.upper()}")
+            lines.append(f"  Message: {msg}")
+            vs = ha.get("visual_health_score", 0.5)
+            ms = ha.get("moisture_health_score", 0.5)
+            cs = ha.get("combined_health_score", 0.5)
+            w = ha.get("moisture_weight", 0.0)
+            lines.append(f"  Visual score:     {vs:.3f}")
+            lines.append(f"  Moisture score:   {ms:.3f}")
+            lines.append(f"  Combined score:   {cs:.3f}")
+            lines.append(f"  Moisture weight:  {w:.0%}")
+            flags = ha.get("flags", [])
+            if flags:
+                lines.append(f"  Flags: {', '.join(flags)}")
+            lines.append("")
+            lines.append("--- 24h Statistics ---")
+            stats = sm.get("stats_24h", {})
+            if stats:
+                lines.append(f"  Readings: {stats.get('total_readings', '?')}")
+                for key, label in [("sensor1_avg", "Sensor 1 avg"),
+                                   ("sensor2_avg", "Sensor 2 avg")]:
+                    v = stats.get(key)
+                    if v is not None:
+                        mn = stats.get(key.replace("_avg", "_min"), "?")
+                        mx = stats.get(key.replace("_avg", "_max"), "?")
+                        lines.append(f"  {label}: {v:.1f}%  (min {mn:.1f}, max {mx:.1f})")
+            else:
+                lines.append("  No statistics available")
+        soil_text.insert("1.0", "\n".join(lines))
+        soil_text.configure(state="disabled")
 
     def draw_hue_histogram(image_bgr, leaf_mask=None, fruit_mask=None):
         def _draw():
@@ -1396,6 +1538,14 @@ def gui(args):
         result, output_path = save_observation(analyzer, store if persist else None,
                                                image_bgr, source, args.output, path,
                                                persist=persist)
+        if soil_enabled.get():
+            try:
+                from datetime import datetime as _dt
+                obs_time = _dt.fromisoformat(result.get("observed_at", ""))
+                soil_data = get_moisture_for_olive_analysis(target_time=obs_time)
+                result = integrate_soil_moisture(result, soil_data)
+            except Exception:
+                pass
 
         def _update():
             update_results(result)
@@ -1692,17 +1842,122 @@ def list_trees(args):
         print(f"  {cyan(tid):<18} {bold(str(n)):>12}   {dim(last):>16}")
 
 
+def soil(args):
+    """Display soil moisture data from the UKK-KOSEN monitoring system."""
+    try:
+        client = SoilMoistureClient()
+    except Exception as exc:
+        _error(f"Failed to initialize soil moisture client: {exc}",
+               hint="Check config/soil_moisture.yaml for correct API URL.")
+    cmd = getattr(args, "soil_cmd", "latest")
+    if cmd == "latest":
+        data = client.get_latest()
+        if data is None:
+            print(panel("Soil Moisture - Latest", "  No data available."))
+            return
+        status = get_moisture_status(data)
+        health = assess_moisture_health(data)
+        s1 = data.get("sensor1_moisture_percent")
+        s2 = data.get("sensor2_moisture_percent")
+        ts = data.get("measured_at") or data.get("timestamp") or "—"
+        lines = []
+        lines.append(f"  {bold('Time')}       {ts}")
+        lines.append(f"  {bold('Status')}     {_moisture_badge(status)}")
+        if s1 is not None:
+            lines.append(f"  {bold('Sensor 1')}   {s1:.1f}%")
+        if s2 is not None:
+            lines.append(f"  {bold('Sensor 2')}   {s2:.1f}%")
+        if s1 is not None and s2 is not None:
+            lines.append(f"  {bold('Average')}   {(s1 + s2) / 2:.1f}%")
+        temp = data.get("temperature")
+        hum = data.get("humidity")
+        if temp is not None:
+            lines.append(f"  {bold('Temp')}       {temp:.1f} C")
+        if hum is not None:
+            lines.append(f"  {bold('Humidity')}   {hum:.1f}%")
+        lines.append(f"  {bold('Health')}    {health['message']}")
+        lines.append(f"  {bold('Score')}     {health['score']:.2f}")
+        print(panel("Soil Moisture - Latest", "\n".join(lines)))
+    elif cmd == "history":
+        hours = getattr(args, "hours", 24)
+        records = client.get_history(hours=hours)
+        if not records:
+            print(panel("Soil Moisture - History", "  No history available."))
+            return
+        print(panel("Soil Moisture - History", f"  {bold(str(len(records)))} records (last {hours}h)"))
+        for rec in records[:20]:
+            ts = (rec.get("measured_at") or rec.get("timestamp") or "—")[:16]
+            s1 = rec.get("sensor1_moisture_percent")
+            s2 = rec.get("sensor2_moisture_percent")
+            vals = [v for v in [s1, s2] if v is not None]
+            avg = f"{sum(vals)/len(vals):.0f}%" if vals else "—"
+            temp = rec.get("temperature")
+            temp_str = f"{temp:.0f}C" if temp is not None else "—"
+            print(f"  {dim(ts)}  avg={green(avg):>6}  temp={cyan(temp_str):>6}")
+    elif cmd == "stats":
+        hours = getattr(args, "hours", 24)
+        stats = client.get_stats(hours=hours)
+        if stats is None:
+            print(panel("Soil Moisture - Stats", "  No stats available."))
+            return
+        lines = []
+        lines.append(f"  {bold('Period')}       Last {hours} hours")
+        lines.append(f"  {bold('Readings')}     {stats.get('total_readings', '?')}")
+        for key, label in [("sensor1_avg", "Sensor 1 avg"), ("sensor2_avg", "Sensor 2 avg")]:
+            v = stats.get(key)
+            if v is not None:
+                mn = stats.get(key.replace("_avg", "_min"), "?")
+                mx = stats.get(key.replace("_avg", "_max"), "?")
+                lines.append(f"  {bold(label + ':')}  {v:.1f}%  (min {mn:.1f}, max {mx:.1f})")
+        print(panel("Soil Moisture - Stats", "\n".join(lines)))
+    elif cmd == "status":
+        data = client.get_latest()
+        status = get_moisture_status(data)
+        health = assess_moisture_health(data)
+        s1 = data.get("sensor1_moisture_percent") if data else None
+        s2 = data.get("sensor2_moisture_percent") if data else None
+        vals = [v for v in [s1, s2] if v is not None]
+        avg = f"{sum(vals)/len(vals):.1f}%" if vals else "—"
+        print(f"  {_moisture_badge(status)}  avg={green(avg):>6}  "
+              f"risk={_risk_color(health['risk'])}  score={health['score']:.2f}")
+
+
+def _moisture_badge(status):
+    """Return a colored badge for moisture status."""
+    badges = {
+        "dry": red("DRY"),
+        "optimal": green("OPTIMAL"),
+        "wet": yellow("WET"),
+        "unknown": dim("UNKNOWN"),
+    }
+    return badges.get(status, dim(status.upper()))
+
+
+def _risk_color(risk):
+    """Return a colored risk string."""
+    colors = {
+        "critical": red,
+        "high": accent_err,
+        "moderate": yellow,
+        "normal": green,
+        "unknown": dim,
+    }
+    fn = colors.get(risk, dim)
+    return fn(risk.upper())
+
+
 def parser():
     common=argparse.ArgumentParser(add_help=False); common.add_argument("--config",default=str(ROOT/"config"/"runtime.yaml")); common.add_argument("--database",default=str(ROOT/"data"/"database"/"olivevision.db")); common.add_argument("--output",default=str(ROOT/"outputs"/"observations")); common.add_argument("--verbose",action="store_true")
     p=argparse.ArgumentParser(description="OliveVision: Raspberry Pi friendly local olive monitoring"); sub=p.add_subparsers(dest="command",required=True)
-    x=sub.add_parser("analyze",parents=[common],help="analyse one image and save its record"); x.add_argument("image"); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.set_defaults(func=analyze_file)
-    x=sub.add_parser("capture",parents=[common],help="capture and analyse one camera frame"); x.add_argument("--camera",type=int,default=0); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.set_defaults(func=capture)
+    x=sub.add_parser("analyze",parents=[common],help="analyse one image and save its record"); x.add_argument("image"); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.set_defaults(func=analyze_file)
+    x=sub.add_parser("capture",parents=[common],help="capture and analyse one camera frame"); x.add_argument("--camera",type=int,default=0); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.set_defaults(func=capture)
     x=sub.add_parser("monitor",parents=[common],help="periodically capture and analyse camera frames"); x.add_argument("--camera",type=int,default=0,help="camera device index (default 0)"); x.add_argument("--interval",type=int,default=3600,help="seconds between captures (default 3600)"); x.add_argument("--tree",type=str,default=None,help="associate observations with a trial tree ID"); x.add_argument("--limit",type=int,default=0,help="stop after N cycles (0 = unlimited)"); x.set_defaults(func=monitor)
     x=sub.add_parser("status",parents=[common],help="display latest local observations"); x.add_argument("--limit",type=int,default=20); x.add_argument("--tree",type=str,default=None,help="filter by trial tree ID (e.g. 第1試験樹)"); x.set_defaults(func=status)
     x=sub.add_parser("export",parents=[common],help="export the local database to CSV"); x.add_argument("csv"); x.set_defaults(func=export)
     x=sub.add_parser("trend",parents=[common],help="report colour/wrinkle health trends from stored observations"); x.add_argument("--limit",type=int,default=0,help="only use the most recent N observations (0 = all)"); x.add_argument("--tree",type=str,default=None,help="filter by trial tree ID (e.g. 第1試験樹)"); x.add_argument("--source",type=str,default=None,choices=["image","video"],help="filter by source type"); x.set_defaults(func=trend)
     x=sub.add_parser("trees",parents=[common],help="list all detected trial tree IDs"); x.set_defaults(func=list_trees)
     x=sub.add_parser("video",parents=[common],help="analyse an mp4/avi video frame by frame"); x.add_argument("video"); x.add_argument("--interval",type=int,default=10,help="analyse every Nth frame"); x.set_defaults(func=analyze_video_cli)
+    x=sub.add_parser("soil",parents=[common],help="display soil moisture data"); x.add_argument("soil_cmd",nargs="?",default="latest",choices=["latest","history","stats","status"],help="soil moisture sub-command (default: latest)"); x.add_argument("--hours",type=int,default=24,help="hours of history to show (default 24)"); x.set_defaults(func=soil)
     x=sub.add_parser("gui",parents=[common],help="launch the local desktop GUI"); x.add_argument("--camera",type=int,default=0); x.set_defaults(func=gui)
     return p
 
