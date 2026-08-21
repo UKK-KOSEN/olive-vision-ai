@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 10 * * 1"  # 毎週月曜 10:00 UTC
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -12,6 +17,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +26,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
       - name: Install dependencies
         run: |
@@ -39,6 +46,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install ruff
         run: |
@@ -58,6 +66,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install bandit
         run: |
@@ -66,4 +75,16 @@ jobs:
 
       - name: Run security scan
         run: |
+          bandit -r src/ -ll --skip B101,B110 -f json -o bandit-report.json || true
+
+      - name: Show security summary
+        run: |
           bandit -r src/ -ll --skip B101,B110 || true
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report-${{ github.run_id }}
+          path: bandit-report.json
+          retention-days: 30

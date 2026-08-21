@@ -8,6 +8,15 @@ updates:
     labels:
       - "dependencies"
       - "automated"
+    commit-message:
+      prefix: "pip"
+    groups:
+      production:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -18,3 +27,5 @@ updates:
       - "dependencies"
       - "github-actions"
       - "automated"
+    commit-message:
+      prefix: "ci"
