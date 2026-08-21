@@ -1,263 +1,285 @@
 # OliveVision AI - API Reference
 
-本ドキュメントは各モジュールの詳細なAPI仕様書です。
+This document describes the API for the main modules.
+
+## Table of Contents
+
+1. [runtime](#runtime) - Main analysis engine
+2. [cli_ui](#cli_ui) - CLI UI helpers
+3. [video_processor](#video_processor) - Video processing
 
 ---
 
-## 目次
+## runtime
 
-1. [utils](#utils)
-2. [preprocessing](#preprocessing)
-3. [detection](#detection)
-4. [color_analysis](#color_analysis)
-5. [feature_extraction](#feature_extraction)
-6. [video_processor](#video_processor)
-7. [background_removal](#background_removal)
-8. [advanced_detection](#advanced_detection)
-9. [texture_analysis](#texture_analysis)
-10. [optical_flow_analysis](#optical_flow_analysis)
+### Analyzer
 
----
+Main analysis class for image processing.
 
-## utils
+#### `__init__(config: dict = None)`
 
-### load_config(config_path: str) → Dict
+Initialize analyzer with optional config override.
 
-設定ファイルを読み込む。
-
-**パラメータ:**
-- `config_path` (str): YAML設定ファイルのパス（デフォルト: `config/config.yaml`）
-
-**戻り値:** 設定辞書
-
-**例:**
 ```python
-from src import utils
-config = utils.load_config('config/config.yaml')
-print(config['leaf_detection']['hue_range'])  # [35, 95]
+from src.runtime import Analyzer
+analyzer = Analyzer()
+result = analyzer.analyze("image.jpg")
 ```
 
----
+#### `analyze(path: str, tree_id: str = None) -> dict`
 
-### setup_logger(log_path: str) → logging.Logger
+Analyze an image file.
 
-ロガーを設定してインスタンスを作成。
+**Parameters:**
+- `path` (str): Path to image file
+- `tree_id` (str, optional): Tree ID from QR code
 
-**パラメータ:**
-- `log_path` (str): ログファイルのパス（デフォルト: `outputs/olive_analysis.log`）
-
-**戻り値:** ロガーオブジェクト
-
-**例:**
-```python
-logger = utils.setup_logger('outputs/custom.log')
-logger.info('処理開始')
-```
-
----
-
-### load_image(image_path: str) → np.ndarray
-
-画像ファイルを読み込む。
-
-**パラメータ:**
-- `image_path` (str): 画像ファイルのパス
-
-**戻り値:** BGR形式のnumpy配列 (shape: [H, W, 3])
-
-**例外:**
-- `ValueError`: ファイルが読み込めない場合
-
----
-
-### save_image(image: np.ndarray, output_path: str) → None
-
-画像をファイルに保存。
-
-**パラメータ:**
-- `image` (np.ndarray): 画像配列
-- `output_path` (str): 出力パス
-
----
-
-### calculate_circularity(area: float, perimeter: float) → float
-
-円形度を計算。
-
-**式:** `4πA / P²`
-
-**戻り値:** 円形度（0-1、1に近いほど円形）
-
----
-
-### get_contour_properties(contour: np.ndarray) → Dict
-
-輪郭から複数のプロパティを計算。
-
-**戻り値:**
+**Returns:**
 ```python
 {
-    'area': float,              # 面積
-    'perimeter': float,         # 周囲長
-    'x': int, 'y': int,        # 左上座標
-    'width': int, 'height': int, # 幅・高さ
-    'center_x': float,          # 中心X
-    'center_y': float,          # 中心Y
-    'radius': float,            # 最小外接円の半径
-    'circularity': float,       # 円形度
-    'solidity': float,          # Solidity
-    'aspect_ratio': float,      # 幅/高さ
-    'extent': float,            # 面積/外接矩形面積
+    "timestamp": "2026-08-21T10:00:00",
+    "source": "image",
+    "tree_id": "1-3",
+    "image_path": "path/to/image.jpg",
+    "leaf_count": 39,
+    "fruit_count": 3,
+    "canopy_coverage": 0.45,
+    "leaf_color_avg": {"hue": 56.2, "saturation": 120.5, "value": 89.3},
+    "fruit_color_avg": {"hue": 45.0, "saturation": 150.0, "value": 100.0},
+    "maturity_avg": 0.72,
+    "yellow_leaf_ratio": 0.05,
+    "wrinkle_score": 0.23,
+    "leaf_curl_score": 0.15,
+    "stress_level": "low",
+    "analysis_details": {...}
+}
+```
+
+#### `_detect_qr_tree_id(image) -> str | None`
+
+Detect QR code and extract tree ID.
+
+**Returns:**
+- Tree ID string (e.g., "1-3") or None
+
+#### `_compute_leaf_curl_score(leaf_contours, gray) -> float`
+
+Compute leaf curl score (0-1).
+
+**Parameters:**
+- `leaf_contours`: List of leaf contours
+- `gray`: Grayscale image
+
+**Returns:**
+- Curl score (0 = no curl, 1 = severe curl)
+
+#### `_compute_wrinkle_score(image, mask) -> float`
+
+Compute wrinkle score (0-1).
+
+**Parameters:**
+- `image`: BGR image
+- `mask`: Leaf mask
+
+**Returns:**
+- Wrinkle score and reliability flag
+
+#### `_compute_analysis_details(result, image) -> dict`
+
+Compute detailed analysis for all sections.
+
+**Returns:**
+```python
+{
+    "leaf": {
+        "count": 39,
+        "avg_area": 1250.5,
+        "total_area": 48769.5,
+        "avg_circularity": 0.65,
+        "avg_solidity": 0.82,
+        "yellow_count": 2,
+        "brown_count": 1
+    },
+    "fruit": {
+        "count": 3,
+        "avg_diameter": 15.2,
+        "maturity_avg": 0.72,
+        "color_classes": {"green": 1, "purple": 2}
+    },
+    "canopy": {
+        "coverage": 0.45,
+        "density": 0.78,
+        "greenness": 0.85
+    },
+    "stress": {
+        "wrinkle_score": 0.23,
+        "leaf_curl_score": 0.15,
+        "yellow_leaf_ratio": 0.05,
+        "level": "low"
+    }
 }
 ```
 
 ---
 
-### create_mask_from_hsv_range(...) → np.ndarray
+### VideoAnalyzer
 
-HSV範囲からマスクを作成。
+Video analysis class with DB persistence.
 
-**パラメータ:**
-- `hsv_image` (np.ndarray): HSV画像
-- `hue_range` (tuple): [min, max]
-- `sat_range` (tuple): [min, max]
-- `val_range` (tuple): [min, max]
+#### `__init__(config: dict = None, store: Store = None, persist: bool = False)`
 
-**戻り値:** 二値マスク（255: 範囲内、0: 範囲外）
+**Parameters:**
+- `config`: Configuration dict
+- `store`: Store instance for DB persistence
+- `persist`: Whether to persist results to DB
 
----
+#### `analyze_video(path: str, tree_id: str = None, interval: int = 30) -> dict`
 
-## preprocessing
+Analyze video file.
 
-### ImagePreprocessor
+**Parameters:**
+- `path`: Path to video file
+- `tree_id`: Tree ID from QR code
+- `interval`: Frame interval (default: 30 = 1 sec at 30fps)
 
-画像の前処理を行うクラス。
-
-#### __init__(config: Dict)
-
-**パラメータ:**
-- `config` (dict): 設定辞書
-
-```python
-preprocessor = ImagePreprocessor(config)
-```
-
-#### preprocess(image: np.ndarray) → np.ndarray
-
-画像を前処理（ノイズ除去→白バランス→ガンマ補正）。
-
-**パラメータ:**
-- `image` (np.ndarray): BGR画像
-
-**戻り値:** 前処理済み画像
-
----
-
-### ColorSpaceConverter
-
-#### get_color_spaces(image: np.ndarray) → Dict
-
-複数の色空間に変換。
-
-**戻り値:**
+**Returns:**
 ```python
 {
-    'bgr': np.ndarray,   # 元の画像
-    'hsv': np.ndarray,   # HSV色空間
-    'lab': np.ndarray,   # Lab色空間
-    'gray': np.ndarray,  # グレースケール
+    "timestamp": "2026-08-21T10:00:00",
+    "source": "video",
+    "video_path": "path/to/video.mp4",
+    "tree_id": "1-3",
+    "frame_count": 150,
+    "duration_seconds": 5.0,
+    "fps": 30.0,
+    "frames": [
+        {"frame_idx": 0, "leaf_count": 39, "fruit_count": 3, ...},
+        {"frame_idx": 30, "leaf_count": 40, "fruit_count": 3, ...},
+        ...
+    ],
+    "summary": {
+        "leaf_count_avg": 39.5,
+        "fruit_count_avg": 3.0,
+        "leaf_curl_avg": 0.15,
+        "maturity_avg": 0.72,
+        ...
+    },
+    "trend": {
+        "leaf_count_trend": "stable",
+        "fruit_count_trend": "stable",
+        "maturity_trend": "increasing"
+    }
 }
 ```
 
 ---
 
-## detection
+### Store
 
-### ObjectDetector
+SQLite storage for analysis results.
 
-葉・実を検出するクラス。
+#### `__init__(db_path: str = None)`
 
-#### __init__(config: Dict)
+**Parameters:**
+- `db_path`: Path to SQLite database (default: `data/database/olivevision.db`)
 
-#### detect_leaves(image: np.ndarray) → Tuple[List[Dict], np.ndarray]
+#### `save(result: dict) -> None`
 
-葉を検出。
+Save analysis result to database.
 
-**戻り値:** (葉情報のリスト, 可視化画像)
+#### `recent(limit: int = 10) -> list`
 
-**葉情報:**
+Get recent analysis results.
+
+#### `recent_by_tree(tree_id: str, limit: int = 10) -> list`
+
+Get recent results filtered by tree ID.
+
+#### `recent_by_source(source: str, limit: int = 10) -> list`
+
+Get recent results filtered by source (image/video).
+
+#### `tree_ids() -> list`
+
+Get all unique tree IDs.
+
+#### `export_csv(output_path: str, tree_id: str = None, source: str = None) -> str`
+
+Export data to CSV file.
+
+**Returns:**
+- Path to exported CSV file
+
+---
+
+### DEFAULTS
+
+Default configuration values.
+
 ```python
-{
-    'area': float,
-    'perimeter': float,
-    'x': int, 'y': int,
-    'width': int, 'height': int,
-    'circularity': float,
-    'solidity': float,
-    ...
+DEFAULTS = {
+    "detection": {
+        "fruit_min_area": 250,
+        "fruit_max_area": 50000,
+        "leaf_min_area": 100,
+        "leaf_max_area": 100000,
+        "circle_dp": 1.2,
+        "circle_min_dist": 30,
+        "circle_param1": 100,
+        "circle_param2": 30,
+        "circle_min_radius": 5,
+        "circle_max_radius": 50,
+    },
+    "analysis": {
+        "curl_weights": {
+            "tip_fraction": 0.4,
+            "mid_fraction": 0.3,
+            "base_fraction": 0.3,
+        },
+        "curl_threshold": 0.35,
+        "wrinkle_discount": 0.5,
+    },
+    "stress": {
+        "wrinkle_erosion": 3,
+        "wrinkle_ridge_size": 5,
+        "wrinkle_interior_frac": 0.1,
+        "wrinkle_reliable_threshold": 0.3,
+    },
+    "trend": {
+        "min_samples": 3,
+        "window_size": 5,
+    },
 }
 ```
 
-#### detect_fruits(image: np.ndarray) → Tuple[List[Dict], np.ndarray]
-
-実を検出。
-
 ---
 
-## color_analysis
+## cli_ui
 
-### ColorAnalyzer
+### Color Helpers
 
-色を分析するクラス。
-
-#### analyze_leaf_color(image: np.ndarray, mask: np.ndarray) → Dict
-
-葉の色を分析。
-
-**戻り値:**
 ```python
-{
-    'mean_hue': float,              # 平均Hue値
-    'mean_saturation': float,       # 平均Saturation
-    'mean_value': float,            # 平均Value
-    'color_stage': str,             # 'healthy_green', 'yellow', 'brown', etc.
-    'senescence_degree': float,     # 枯葉度（0-100%）
-}
+from src.cli_ui import bold, dim, cyan, green, yellow, red, magenta
 ```
 
-#### calculate_color_difference(image1: np.ndarray, image2: np.ndarray, ...) → float
+- `bold(text)`: Bold text
+- `dim(text)`: Dimmed text
+- `cyan(text)`: Cyan text
+- `green(text)`: Green text
+- `yellow(text)`: Yellow text
+- `red(text)`: Red text
+- `magenta(text)`: Magenta text
 
-Lab色空間での色差（ΔE）を計算。
+### UI Components
 
----
+```python
+from src.cli_ui import panel, rule, Spinner, ProgressBar
+```
 
-## feature_extraction
-
-### FeatureExtractor
-
-特徴量を抽出するクラス。
-
-#### extract_features(image_path: str, detection_results: Dict, ...) → Dict
-
-画像から全特徴量を抽出（100+種類）。
-
-**戻り値:** 特徴量の辞書
-
----
-
-### TimeSeriesFeatureExtractor
-
-#### create_lag_features(df: pd.DataFrame, lags: List[int]) → pd.DataFrame
-
-遅延特徴量を作成（デフォルト: [1, 2, 6, 12, 24]）。
-
-#### create_moving_average_features(df: pd.DataFrame, windows: List[int]) → pd.DataFrame
-
-移動平均特徴量を作成（デフォルト: [3, 6, 12, 24]）。
-
-#### create_diff_features(df: pd.DataFrame, diffs: List[int]) → pd.DataFrame
-
-差分特徴量を作成（デフォルト: [1, 24]）。
+- `panel(title, content)`: Create a panel with title
+- `rule()`: Create a horizontal rule
+- `Spinner(message)`: Context manager for spinner
+- `ProgressBar(total)`: Progress bar
 
 ---
 
@@ -265,308 +287,90 @@ Lab色空間での色差（ΔE）を計算。
 
 ### VideoProcessor
 
-動画ファイルを処理するクラス。
+Video file processing class.
 
-#### __init__(video_path: str, logger: logging.Logger)
+#### `__init__(video_path: str)`
 
-#### get_frame_iterator(frame_interval: int) → Generator[Tuple[int, np.ndarray], None, None]
+#### `get_frame_iterator(interval: int = 30) -> Generator`
 
-フレームを取得するイテレータ。
-
-**パラメータ:**
-- `frame_interval` (int): フレーム間隔（1=全フレーム、30=1秒ごと）
-
-**Yields:** (フレーム番号, BGR画像)
+Yield frames at specified interval.
 
 ```python
-video = VideoProcessor('video.mp4', logger)
+video = VideoProcessor("video.mp4")
 for frame_idx, frame in video.get_frame_iterator(30):
-    print(f"Frame {frame_idx}")
+    print(f"Frame {frame_idx}: {frame.shape}")
 ```
 
-#### get_frame_at_time(time_seconds: float) → Optional[np.ndarray]
+#### `get_statistics() -> dict`
 
-指定された時刻のフレームを取得。
+Get video metadata.
 
-#### extract_frames_to_disk(output_dir: str, frame_interval: int) → int
-
-フレームをディスクに保存。
-
-**戻り値:** 保存されたフレーム数
-
-#### get_statistics() → Dict
-
-動画全体の統計情報。
-
-**戻り値:**
+**Returns:**
 ```python
 {
-    'fps': float,
-    'frame_count': int,
-    'width': int,
-    'height': int,
-    'duration_seconds': float,
-    'file_path': str,
+    "fps": 30.0,
+    "frame_count": 150,
+    "width": 1920,
+    "height": 1080,
+    "duration_seconds": 5.0,
+    "file_path": "path/to/video.mp4"
 }
 ```
 
 ---
 
-### FrameSequenceAnalyzer
+## Configuration
 
-時系列フレームを解析するクラス。
+All parameters can be configured via `config/runtime.yaml`:
 
-#### add_frame_result(frame_idx: int, timestamp: float, result: Dict) → None
+```yaml
+detection:
+  fruit_min_area: 250
+  fruit_max_area: 50000
+  leaf_min_area: 100
+  leaf_max_area: 100000
+  circle_dp: 1.2
+  circle_min_dist: 30
+  circle_param1: 100
+  circle_param2: 30
+  circle_min_radius: 5
+  circle_max_radius: 50
 
-フレーム解析結果を追加。
+analysis:
+  curl_weights:
+    tip_fraction: 0.4
+    mid_fraction: 0.3
+    base_fraction: 0.3
+  curl_threshold: 0.35
+  wrinkle_discount: 0.5
 
-#### get_trend(key: str) → List[Tuple[int, float]]
+stress:
+  wrinkle_erosion: 3
+  wrinkle_ridge_size: 5
+  wrinkle_interior_frac: 0.1
+  wrinkle_reliable_threshold: 0.3
 
-時系列のトレンドを取得。
-
-#### calculate_change_rate(key: str) → float
-
-値の変化率を計算（%）。
-
-#### detect_anomalies(key: str, threshold: float = 2.0) → List[int]
-
-異常フレームを検出（標準偏差ベース）。
-
----
-
-## background_removal
-
-### BackgroundRemover
-
-背景を除去するクラス（複数の手法）。
-
-#### remove_by_hsv(...) → np.ndarray
-
-HSV値で背景（暗色）を除去。
-
-#### remove_by_grabcut(image: np.ndarray, rect: Tuple = None, ...) → Tuple[np.ndarray, np.ndarray]
-
-GrabCutアルゴリズムで背景を除去。
-
-**戻り値:** (マスク, 前景画像)
-
-#### remove_by_canny(image: np.ndarray, ...) → np.ndarray
-
-Cannyエッジ検出で背景を除去。
-
-#### remove_by_kmeans(image: np.ndarray, k: int = 3) → np.ndarray
-
-K-meansクラスタリングで背景を除去。
-
-#### adaptive_background_removal(image: np.ndarray, config: Dict) → np.ndarray
-
-環境に応じて最適な背景除去方法を自動選択。
-
-**アルゴリズム選択:**
-- コントラスト > 50 → Cannyを使用
-- 彩度 < 80 → HSVを使用
-- その他 → K-meansを使用
-
-#### apply_morphological_cleanup(mask: np.ndarray, ...) → np.ndarray
-
-モルフォロジー処理でマスクをクリーンアップ。
-
----
-
-## advanced_detection
-
-### AdvancedDetector
-
-より精密な検出を行うクラス。
-
-#### detect_leaves_multiscale(image: np.ndarray, scales: List[float] = None) → List[Dict]
-
-マルチスケール葉検出。
-
-**パラメータ:**
-- `scales` (list): スケールファクター（デフォルト: [1.0, 0.8, 1.2]）
-
-**処理フロー:**
-1. 複数スケールで並列検出
-2. 検出結果をスケールバック
-3. 重複検出を統合
-
-#### post_process_detections(detections: List[Dict], image: np.ndarray) → List[Dict]
-
-検出結果の後処理（画像範囲外を除外）。
-
-#### calculate_detection_confidence(detection: Dict) → float
-
-検出の信頼度を計算（0-1）。
-
-**計算式:**
-```
-confidence = 0.4 * circularity_score 
-           + 0.4 * solidity_score 
-           + 0.2 * aspect_ratio_score
+trend:
+  min_samples: 3
+  window_size: 5
 ```
 
 ---
 
-### ColorRangeOptimizer
+## Error Handling
 
-#### optimize_hsv_range(image: np.ndarray, foreground_mask: np.ndarray = None, ...) → Dict
-
-画像から最適なHSV範囲を推定。
-
-**パラメータ:**
-- `percentile` (float): パーセンタイル値（デフォルト: 95）
-
-**戻り値:**
-```python
-{
-    'hue_range': tuple,        # (min, max)
-    'saturation_range': tuple,
-    'value_range': tuple,
-}
-```
-
----
-
-## texture_analysis
-
-### TextureAnalyzer
-
-画像テクスチャを解析するクラス。
-
-#### analyze_object_texture(image: np.ndarray, mask: np.ndarray) → Dict
-
-マスク領域のテクスチャを解析。
-
-**戻り値:**
-```python
-{
-    'texture_mean': float,
-    'texture_std': float,
-    'texture_contrast': float,
-    'texture_energy': float,
-    'glcm_contrast': float,
-    'glcm_dissimilarity': float,
-    'glcm_homogeneity': float,
-    'glcm_energy': float,
-    'glcm_correlation': float,
-    'glcm_asm': float,
-    'lbp_energy': float,
-    'lbp_entropy': float,
-    'lbp_uniformity': float,
-}
-```
-
-#### calculate_leaf_smoothness(image: np.ndarray, mask: np.ndarray) → float
-
-葉の表面の滑らかさを計算（0-1、1が最も滑らか）。
-
-#### calculate_fruit_shine(image: np.ndarray, mask: np.ndarray) → float
-
-実の光沢度を計算（0-1）。
-
-#### detect_surface_defects(image: np.ndarray, mask: np.ndarray, ...) → np.ndarray
-
-表面の欠陥を検出。
-
----
-
-## optical_flow_analysis
-
-### OpticalFlowAnalyzer
-
-オプティカルフローで成長速度や動きを追跡。
-
-#### calculate_lucas_kanade_flow(image: np.ndarray, mask: np.ndarray = None) → Tuple[np.ndarray, np.ndarray]
-
-Lucas-Kanadeオプティカルフローを計算。
-
-**戻り値:** (flow_x, flow_y)
-
-#### calculate_growth_metrics(flow_x: np.ndarray, flow_y: np.ndarray) → Dict
-
-フローから成長メトリクスを計算。
-
-**戻り値:**
-```python
-{
-    'avg_flow_magnitude': float,      # 平均フロー大きさ
-    'max_flow_magnitude': float,
-    'std_flow_magnitude': float,
-    'avg_flow_x': float,
-    'avg_flow_y': float,
-}
-```
-
-#### calculate_expansion_rate(flow_x: np.ndarray, flow_y: np.ndarray) → float
-
-領域の拡大率を計算（発散）。
-
-**式:** `divergence = ∂u/∂x + ∂v/∂y`
-
----
-
-### ObjectTracker
-
-マルチターゲット追跡を行うクラス。
-
-#### update(detections: List[Dict]) → Dict[int, Dict]
-
-検出結果から追跡を更新。
-
-**戻り値:** ID → 更新された検出結果
+All modules use consistent error handling with `_error()` helper:
 
 ```python
-tracker = ObjectTracker(logger)
-for frame_idx, frame in video.get_frame_iterator():
-    detections = detector.detect_leaves(frame)
-    tracked = tracker.update(detections)
-    for track_id, detection in tracked.items():
-        print(f"Leaf {track_id}: {detection['track_history']}")
-```
-
-#### get_track_velocity(track_id: int, window_size: int = 5) → Tuple[float, float]
-
-追跡オブジェクトの速度を計算（ピクセル/フレーム）。
-
-#### get_track_acceleration(track_id: int, window_size: int = 5) → Tuple[float, float]
-
-追跡オブジェクトの加速度を計算。
-
----
-
-## 共通パターン
-
-### エラーハンドリング
-
-すべてのモジュールは詳細なロギングを行います：
-
-```python
-import logging
-logger = logging.getLogger(__name__)
+from olivevision import _error
 
 try:
-    result = processor.process(image)
-    logger.info(f"処理成功: {len(result)}個のオブジェクト")
+    result = analyzer.analyze("image.jpg")
 except Exception as e:
-    logger.error(f"処理失敗: {str(e)}", exc_info=True)
-```
-
-### メモリ効率
-
-大規模動画処理の場合、フレーム間隔を調整：
-
-```python
-# 推奨: 30 (30fps動画で1秒ごと)
-video = VideoProcessor('large_video.mp4', logger)
-for frame_idx, frame in video.get_frame_iterator(frame_interval=30):
-    # 処理
-    pass
+    _error("Analysis failed", detail=str(e), hint="Check file path")
 ```
 
 ---
 
-## バージョン
-
-- **版**: 0.2.0
-- **最終更新**: 2026-07-19
+**Version**: 0.3.0
+**Last Updated**: 2026-08-21

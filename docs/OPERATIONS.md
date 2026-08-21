@@ -1,94 +1,138 @@
-# Raspberry Pi 運用ガイド / Raspberry Pi operations guide
+# Raspberry Pi Operations Guide
 
-`olivevision.py` is the production entry point. It performs local image analysis,
-saves an annotated JPEG and JSON result, and appends a row to SQLite. It does not
-need a training dataset, a model file, network access, or cloud credentials.
+`olivevision.py` is the production entry point. It performs local image/video analysis,
+saves annotated results, and stores data in SQLite. No training, no network, no cloud required.
 
-## Recommended hardware
+## Recommended Hardware
 
-The supported baseline is Raspberry Pi 4 (4 GB RAM), Raspberry Pi OS Bookworm
-64-bit (Python 3.11), a reliable 5 V / 3 A power supply, and a USB camera or Raspberry Pi
-Camera Module. Raspberry Pi 5 (4 GB+) is recommended for higher-resolution
-images or shorter capture intervals. A Pi Zero is not a supported production
-target. Use a high-endurance microSD card or an SSD; keep sufficient free space
-for `outputs/observations/`.
+- **Raspberry Pi 4** (4 GB RAM) or **Pi 5** (4 GB+)
+- **Raspberry Pi OS Bookworm** 64-bit (Python 3.11)
+- **USB camera** or **Raspberry Pi Camera Module**
+- **5V / 3A power supply**
+- **High-endurance microSD** or SSD
 
-## Install
+Pi Zero is not supported. Ensure sufficient free space for `outputs/observations/`.
 
-On Raspberry Pi OS, install the camera/OpenCV/Tk packages supplied by the OS
-first. They avoid compiling OpenCV on the device.
+## Installation
 
 ```bash
+# Install system packages
 sudo apt update
 sudo apt install -y python3-venv python3-opencv python3-tk python3-picamera2
-cd /path/to/olive-p
+
+# Clone and setup
+git clone https://github.com/UKK-KOSEN/olive-vision-ai.git
+cd olive-vision-ai
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Verify installation
 python3 olivevision.py --help
 ```
 
-`python3-tk` is only required for the GUI. If pip's OpenCV wheel conflicts with
-the OS package, keep `python3-opencv` and install only `numpy` and `PyYAML` in
-the venv. The original research/training stack is intentionally optional:
-`pip install -r requirements-ml.txt`.
+For GUI, install `python3-tk`. For ML features, optionally install `pip install -r ml/requirements-ml.txt`.
 
-Before deployment, run the offline smoke test (it creates its own artificial
-image and does not require a camera or environmental data):
+## Basic Commands
+
+### Image Analysis
 
 ```bash
-python3 -m unittest tests/test_runtime.py
+# Analyze single image
+python3 olivevision.py image.jpg
+
+# Analyze with tree ID
+python3 olivevision.py image.jpg --tree-id "1-3"
+
+# Save annotated image
+python3 olivevision.py image.jpg --save-image
 ```
 
-## Daily operation
-
-Every command shows progress and reports output locations. All paths can be
-overridden with `--database`, `--output`, and `--config`.
+### Video Analysis
 
 ```bash
-# Test with a captured image; creates an annotation, JSON record and SQLite row.
-python3 olivevision.py analyze /home/pi/sample.jpg
+# Analyze video file
+python3 olivevision.py video sample.mp4
 
-# Test the first camera once.
-python3 olivevision.py capture --camera 0
+# Analyze with tree ID
+python3 olivevision.py video sample.mp4 --tree-id "1-3"
 
-# Show the most recent measurements or export them for spreadsheet use.
-python3 olivevision.py status --limit 20
-python3 olivevision.py export outputs/olivevision-export.csv
-
-# Desktop GUI: select an image, capture a frame, inspect the annotated preview,
-# and inspect recent activity.
-python3 olivevision.py gui --camera 0
-
-# Headless continuous monitoring, one capture each hour.
-python3 olivevision.py monitor --camera 0 --interval 3600
+# Custom frame interval
+python3 olivevision.py video sample.mp4 --interval 60
 ```
 
-The green boxes are leaf regions and orange boxes are possible fruit regions.
-The runtime combines HSV and Lab colour spaces, an excess-green vegetation
-index, and contour shape tests (leaf elongation; fruit oval/roundness and
-solidity). This substantially suppresses soil, branches, highlights, and other
-colour-only false positives while retaining the low Raspberry Pi resource use.
-Counts are still classical CV measurements, not a trained object detector.
+### CLI Commands
 
-For reliable site-specific figures, take 10–20 representative daytime images
-and tune `config/runtime.yaml`: raise `*_min_area` to suppress tiny false
-positives; narrow `fruit_hue` if soil is detected; lower `leaf_saturation_min`
-slightly if shade loses olive leaves. Re-run `analyze` after every change and
-visually inspect the annotation before relying on a threshold for operations.
-Always tune and analyse the original camera image, not a previously annotated
-output from `outputs/observations/`: its green/orange overlay boxes can be
-mistaken for image content by any colour-based analyser.
+```bash
+# Show recent analyses
+python3 olivevision.py status
 
-## Reliable unattended operation
+# Filter by tree ID
+python3 olivevision.py status --tree "1-3"
 
-First run `capture` interactively and verify the annotation and `status` output.
-For a USB camera, make sure the service user can read `/dev/video0` (normally by
-being in the `video` group). For a CSI camera, the runtime automatically falls
-back to Picamera2 when OpenCV cannot open a V4L device; ensure
-`python3-picamera2` is installed and test `capture` before enabling a service.
+# Show trend analysis
+python3 olivevision.py trend
 
-Create `/etc/systemd/system/olivevision.service` (replace paths and user):
+# List all tree IDs
+python3 olivevision.py trees
+
+# Export data
+python3 olivevision.py export --format csv
+```
+
+### GUI Mode
+
+```bash
+# Launch GUI
+python3 olivevision.py --gui
+
+# GUI with camera
+python3 olivevision.py --gui --camera 0
+```
+
+### Monitoring Mode
+
+```bash
+# Continuous monitoring (every 60 seconds)
+python3 olivevision.py --monitor --interval 60
+
+# Monitor specific tree
+python3 olivevision.py --monitor --tree-id "1-3" --interval 120
+```
+
+## Configuration
+
+Edit `config/runtime.yaml` to customize parameters:
+
+```yaml
+detection:
+  fruit_min_area: 250
+  leaf_min_area: 100
+  circle_dp: 1.2
+
+analysis:
+  curl_weights:
+    tip_fraction: 0.4
+    mid_fraction: 0.3
+    base_fraction: 0.3
+  curl_threshold: 0.35
+
+stress:
+  wrinkle_erosion: 3
+  wrinkle_ridge_size: 5
+```
+
+## QR Code Tree IDs
+
+The system can detect QR codes in images to identify tree IDs:
+
+- QR codes should contain text like "第1試験樹" (Tree #1)
+- Tree IDs are stored in the database
+- Filter analyses by tree ID using `--tree` flag
+
+## Systemd Service
+
+Create `/etc/systemd/system/olivevision.service`:
 
 ```ini
 [Unit]
@@ -98,8 +142,8 @@ After=network.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/olive-p
-ExecStart=/home/pi/olive-p/.venv/bin/python olivevision.py monitor --camera 0 --interval 3600
+WorkingDirectory=/home/pi/olive-vision-ai
+ExecStart=/home/pi/olive-vision-ai/.venv/bin/python olivevision.py --monitor --camera 0 --interval 3600
 Restart=always
 RestartSec=15
 StandardOutput=journal
@@ -109,7 +153,7 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Then enable it and watch live progress:
+Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
@@ -117,23 +161,42 @@ sudo systemctl enable --now olivevision
 journalctl -u olivevision -f
 ```
 
-Stop it safely with `sudo systemctl stop olivevision`. The monitor catches a
-temporary camera failure, logs it, and retries on the next interval; systemd
-restarts the process if it terminates unexpectedly.
+## Storage
 
-## Verification performed in this repository
+- **Database**: `data/database/olivevision.db`
+- **Observations**: `outputs/observations/`
+- **Annotated images**: `outputs/preview/`
 
-The included offline test creates a synthetic image containing one green leaf
-region and one fruit-coloured region. The test verifies annotation output,
-SQLite persistence, and CSV export. The CLI was also checked end-to-end with
-that image (`analyze`, `status`, and `export`) and the camera-unavailable path
-was checked for a clear error message. A real camera must still be checked on
-the target Raspberry Pi with `capture --camera 0`, because this development
-machine has no attached Pi camera.
+Back up regularly. Output pruning is intentionally manual.
 
-## Storage and backup
+## Troubleshooting
 
-SQLite history is `data/database/olivevision.db`; annotations and per-run JSON
-are `outputs/observations/`. Back these up regularly. Output pruning is a local
-operations decision and is intentionally not automatic, so evidence is never
-silently deleted.
+### No detections?
+- Check lighting conditions
+- Adjust `detection.fruit_min_area` in config
+- Ensure QR code is clearly visible (if using tree IDs)
+
+### Camera not working?
+- Verify `/dev/video0` is accessible
+- Check user is in `video` group
+- Test with `python3 olivevision.py --capture --camera 0`
+
+### Slow performance?
+- Increase `detection.leaf_min_area`
+- Use `--interval 60` for monitoring
+- Reduce image resolution
+
+## Verification
+
+Run offline tests before deployment:
+
+```bash
+python3 -m pytest tests/test_runtime.py -v
+```
+
+All 24 tests should pass.
+
+---
+
+**Version**: 0.3.0
+**Last Updated**: 2026-08-21
