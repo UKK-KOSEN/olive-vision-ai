@@ -66,7 +66,7 @@ class SoilMoistureClient:
             if time.time() - cached_time < self.cache_ttl:
                 return cached_data
 
-        headers = {}
+        headers = {"User-Agent": "OliveVision-SoilMoisture/1.0"}
         if self.api_key:
             headers["X-Sensor-Api-Key"] = self.api_key
 
