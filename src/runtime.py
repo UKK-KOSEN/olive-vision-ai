@@ -1413,9 +1413,17 @@ class Analyzer:
     def _adapt_for_resolution(self, image: np.ndarray) -> dict:
         """Return config scaled for the input image resolution."""
         if self.drone_mode:
-            # Drone mode uses its own detection parameters; skip resolution scaling
+            # Drone mode: its own detection parameters; skip resolution scaling
+            # but reduce area thresholds for smaller aerial leaves
             scaled = copy.deepcopy(self.config)
             scaled["_resolution_mode"] = "drone"
+            det = scaled.get("detection", {})
+            # Lower area thresholds to catch smaller fragmented foliage
+            for key in ["leaf_min_area", "fruit_min_area", "wrinkle_min_reliable_area"]:
+                if key in det:
+                    det[key] = max(20, int(det[key] * 0.4))
+            if "fruit_no_circle_min_area" in det:
+                det["fruit_no_circle_min_area"] = max(50, int(det["fruit_no_circle_min_area"] * 0.4))
             return scaled
         if self.resolution_mode == "normal":
             return self.config
@@ -1489,12 +1497,14 @@ class Analyzer:
         # NOTE: normalize_illumination is NOT used here because CLAHE shifts
         # hue values (e.g. green H=35-70 -> H=15-25), breaking detection.
         if drone_mode:
-            # Wider HSV green range for aerial views (lighting varies more)
-            # Keep H>=25 to avoid brown/sky artifacts; extend upper for yellow-green
+            # Wider HSV green range for aerial views
+            # H: 25-100 covers olive greens to yellow-greens
+            # S: 12 catches low-saturation shadow greens
+            # V: 8 catches very dark shadow vegetation
             hue_lo = max(25, spec["leaf_hue"][0] - 5)
             hue_hi = min(100, spec["leaf_hue"][1] + 5)
-            sat_floor_val = max(15, spec["leaf_saturation_min"] - 18)
-            val_floor = max(12, spec["leaf_value_min"] - 13)
+            sat_floor_val = max(12, spec["leaf_saturation_min"] - 22)
+            val_floor = max(8, spec["leaf_value_min"] - 17)
         else:
             hue_lo, hue_hi = spec["leaf_hue"]
             sat_floor_val = spec["leaf_saturation_min"]
@@ -1545,21 +1555,23 @@ class Analyzer:
 
         combined = cv2.bitwise_and(hsv_mask, cv2.bitwise_or(multi_signal, vegetation))
 
-        # Morphological cleanup with elliptical kernel (smaller when blurry so
-        # softened details survive)
-        edge_k = max(3, spec.get("edge_close_kernel", 5) - (1 if blur_level >= 0.5 else 0))
+        # Morphological cleanup with elliptical kernel
+        # Drone mode: smaller kernels to preserve fragmented aerial foliage
+        edge_k = max(3, spec.get("edge_close_kernel", 5) - (1 if blur_level >= 0.5 or drone_mode else 0))
         ekernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_k, edge_k))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_DILATE, ekernel)
+        if not drone_mode:
+            combined = cv2.morphologyEx(combined, cv2.MORPH_DILATE, ekernel)
         clean_size = max(3, spec.get("adaptive_blur", 5))
         if drone_mode:
-            clean_size = min(7, clean_size + 2)
+            clean_size = max(3, clean_size - 1)
         combined = self._clean(combined, size=clean_size)
 
-        # Scale-aware secondary cleanup
+        # Scale-aware secondary cleanup (skip OPEN for drone to keep small regions)
         h, w = image.shape[:2]
         mk_size = max(3, min(7, int(min(h, w) / 150)))
         mk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mk_size, mk_size))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, mk)
+        if not drone_mode:
+            combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, mk)
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, mk)
 
         # Suppress very dark pixels (likely noise/shadow)
