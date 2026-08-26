@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   test:
@@ -37,6 +38,14 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
 
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: test-results/
+          retention-days: 7
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -57,6 +66,10 @@ jobs:
         run: |
           ruff check src/ olivevision.py --select=E9,F63,F7,F82 --output-format=github
 
+      - name: Lint check
+        run: |
+          ruff check src/ olivevision.py --output-format=github || true
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -73,18 +86,65 @@ jobs:
           python -m pip install --upgrade pip
           pip install bandit
 
-      - name: Run security scan
+      - name: Run security scan (SARIF)
         run: |
-          bandit -r src/ -ll --skip B101,B110 -f json -o bandit-report.json || true
+          bandit -r src/ -ll --skip B101,B110 -f sarif -o bandit-report.sarif || true
 
-      - name: Show security summary
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-report.sarif
+
+      - name: Run security scan (summary)
         run: |
           bandit -r src/ -ll --skip B101,B110 || true
 
-      - name: Upload security report
+      - name: Upload JSON report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bandit-report-${{ github.run_id }}
-          path: bandit-report.json
+          path: bandit-report.sarif
           retention-days: 30
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check VERSION file
+        run: |
+          if [ -f VERSION ]; then
+            VERSION=$(cat VERSION | tr -d '[:space:]')
+            echo "Current version: $VERSION"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "ERROR: VERSION file must follow semver (e.g., 1.2.3 or 1.2.3-beta.1)"
+              exit 1
+            fi
+          else
+            echo "WARNING: VERSION file not found"
+          fi
+
+      - name: Check for version bump on release PR
+        if: github.event_name == 'pull_request'
+        run: |
+          # Check if VERSION file changed in this PR
+          if git diff --name-only origin/main...HEAD | grep -q "^VERSION$"; then
+            NEW_VERSION=$(cat VERSION | tr -d '[:space:]')
+            echo "Version bump detected: $NEW_VERSION"
+          else
+            echo "No version bump in this PR"
+          fi

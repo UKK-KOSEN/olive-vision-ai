@@ -2,31 +2,41 @@ name-template: "v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
 
 categories:
-  - title: "🚀 Features"
+  - title: "Features"
     labels:
       - "feature"
       - "enhancement"
-  - title: "🐛 Bug Fixes"
+      - "feat"
+  - title: "Bug Fixes"
     labels:
-      - "bug"
       - "fix"
-  - title: "📚 Documentation"
+      - "bugfix"
+      - "bug"
+  - title: "Security"
+    labels:
+      - "security"
+      - "dependency"
+  - title: "Documentation"
     labels:
       - "documentation"
       - "docs"
-  - title: "🔧 Maintenance"
+  - title: "Maintenance"
     labels:
       - "chore"
-      - "dependencies"
+      - "maintenance"
+      - "refactor"
+      - "test"
       - "ci"
 
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 change-title-escapes: '\<*_&'
+no-changes-template: "No changes since last release."
 
 version-resolver:
   major:
     labels:
       - "major"
+      - "breaking"
   minor:
     labels:
       - "minor"
@@ -35,15 +45,34 @@ version-resolver:
   patch:
     labels:
       - "patch"
-      - "bug"
       - "fix"
-      - "chore"
-      - "dependencies"
+      - "bugfix"
+      - "bug"
+      - "security"
+      - "dependency"
   default: patch
 
-template: |
-  ## Changes
+autolabeler:
+  - label: "feature"
+    title:
+      - '/^feat/i'
+  - label: "fix"
+    title:
+      - '/^fix/i'
+  - label: "security"
+    title:
+      - '/^security/i'
+    branch:
+      - '/dependabot/i'
+  - label: "documentation"
+    title:
+      - '/^docs/i'
+  - label: "chore"
+    title:
+      - '/^chore/i'
 
-  $CHANGES
+exclude-labels:
+  - "skip-changelog"
 
-  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+sort-by: "title"
+sort-order: "asc"

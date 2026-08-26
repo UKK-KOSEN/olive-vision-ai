@@ -1,25 +1,72 @@
+# Labels for PRs
+# https://github.com/actions/labeler
+
+security:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'SECURITY.md'
+          - 'bandit*'
+          - '**/*security*'
+
 documentation:
   - changed-files:
       - any-glob-to-any-file:
-          - "*.md"
-          - docs/**
+          - 'docs/**'
+          - '**/*.md'
+          - 'README*'
 
 tests:
   - changed-files:
       - any-glob-to-any-file:
-          - tests/**
+          - 'tests/**'
+          - '**/*test*'
 
 ci:
   - changed-files:
       - any-glob-to-any-file:
-          - .github/**
+          - '.github/**'
 
-src:
+dependencies:
   - changed-files:
       - any-glob-to-any-file:
-          - src/**
+          - 'requirements*.txt'
+          - 'setup.py'
+          - 'setup.cfg'
+          - 'pyproject.toml'
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'src/**'
+          - 'olivevision.py'
 
 config:
   - changed-files:
       - any-glob-to-any-file:
-          - config/**
+          - 'config/**'
+
+soil-moisture:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'src/soil_moisture.py'
+          - 'config/soil_moisture.yaml'
+          - 'tests/test_soil_moisture.py'
+          - 'docs/SOIL_MOISTURE_GUIDE.md'
+
+feature:
+  - head-branch:
+      - '/^feat/'
+      - '/^feature/'
+      - '/^add/'
+
+fix:
+  - head-branch:
+      - '/^fix/'
+      - '/^bugfix/'
+      - '/^hotfix/'
+
+chore:
+  - head-branch:
+      - '/^chore/'
+      - '/^ci/'
+      - '/^build/'
