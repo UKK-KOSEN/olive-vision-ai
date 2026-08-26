@@ -241,6 +241,60 @@ def scale_detection_for_resolution(config: dict, image_width: int) -> dict:
     return scaled
 
 
+# --- Drone / aerial image enhancement helpers ---
+
+def normalize_illumination(image):
+    """Color-normalize an image to reduce lighting variation.
+
+    Uses LAB color space to normalize L channel while preserving A/B.
+    This helps drone images taken under different lighting conditions.
+    """
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    # CLAHE on L channel: adaptive histogram equalization
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    # Gentle white balance: shift A/B channels toward mean
+    a_mean, b_mean = np.mean(a), np.mean(b)
+    a = cv2.addWeighted(a, 0.85, np.full_like(a, a_mean), 0.15, 0)
+    b = cv2.addWeighted(b, 0.85, np.full_like(b, b_mean), 0.15, 0)
+    lab = cv2.merge([l, a, b])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def compute_adaptive_green_threshold(image, base_min=10, percentile=5):
+    """Compute adaptive ExG threshold from image statistics.
+
+    Returns a threshold higher than base_min based on the image's
+    actual green distribution, reducing false positives in noisy images.
+    """
+    exg = _compute_vegetation_index(image)
+    nonzero = exg[exg > 0]
+    if len(nonzero) < 100:
+        return base_min
+    # Use percentile as floor, but at least base_min
+    adaptive = max(base_min, int(np.percentile(nonzero, percentile)))
+    return min(adaptive, 30)  # cap at 30 to avoid over-tightening
+
+
+def _compute_vegetation_index(image):
+    """Excess Green Index (ExG) = 2*g - r - b (normalized 0-255)."""
+    f = image.astype(np.float32)
+    total = f[:, :, 0] + f[:, :, 1] + f[:, :, 2] + 1e-6
+    r, g, b = f[:, :, 2] / total, f[:, :, 1] / total, f[:, :, 0] / total
+    exg = (2.0 * g - r - b + 1.0) * 127.5
+    return np.clip(exg, 0, 255).astype(np.uint8)
+
+
+def _compute_cgi(image):
+    """Chlorophyll Green-Red Index: 128*(G-R)/(G+R)+128."""
+    f = image.astype(np.float32)
+    g = f[:, :, 1]
+    r = f[:, :, 2]
+    cgi = 128.0 * (g - r) / (g + r + 1e-6) + 128.0
+    return np.clip(cgi, 0, 255).astype(np.uint8)
+
+
 def build_logger(verbose: bool = False) -> logging.Logger:
     logger = logging.getLogger("olivevision.runtime")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -1430,33 +1484,64 @@ class Analyzer:
     # ---- mask builders ----
 
     def _build_leaf_mask(self, image, hsv, lab, spec, fg_mask=None, edge_refine=True,
-                         blur_level=0.0):
+                         blur_level=0.0, drone_mode=False):
         """Multi-colorspace leaf mask: HSV + ExG + CGI + LAB + edge guidance.
 
         blur_level relaxes signal requirements in blurry frames where colour
         discrimination is weaker (fewer agreement signals + lower saturation floor).
+        drone_mode enables aerial-specific enhancements: color normalization,
+        adaptive thresholds, wider HSV ranges.
         """
+        # --- Drone-specific preprocessing ---
+        if drone_mode:
+            # Color-normalize to reduce lighting variation
+            image_norm = normalize_illumination(image)
+            hsv = cv2.cvtColor(image_norm, cv2.COLOR_BGR2HSV)
+            lab = cv2.cvtColor(image_norm, cv2.COLOR_BGR2LAB)
+            # Wider HSV green range for aerial views (lighting varies more)
+            hue_lo = max(25, spec["leaf_hue"][0] - 8)
+            hue_hi = min(100, spec["leaf_hue"][1] + 8)
+            sat_floor_val = max(18, spec["leaf_saturation_min"] - 12)
+            val_floor = max(18, spec["leaf_value_min"] - 10)
+        else:
+            hue_lo, hue_hi = spec["leaf_hue"]
+            sat_floor_val = spec["leaf_saturation_min"]
+            val_floor = spec["leaf_value_min"]
+
         # 1. HSV green range. Saturation floor drops only in very blurry frames.
         relax = max(0.0, (blur_level - 0.5) * 2.0)          # 0..1 for blur>=0.5
-        sat_floor = int(max(25, spec["leaf_saturation_min"] - relax * 25))
+        sat_floor = int(max(25 if not drone_mode else sat_floor_val,
+                            sat_floor_val - relax * 25))
         hsv_mask = cv2.inRange(hsv,
-                               (spec["leaf_hue"][0], max(sat_floor, 25), spec["leaf_value_min"]),
-                               (spec["leaf_hue"][1], 255, 255))
-        # 2. Excess Green index
+                               (hue_lo, max(sat_floor, 25 if not drone_mode else 18), val_floor),
+                               (hue_hi, 255, 255))
+        # 2. Excess Green index (adaptive threshold for drone)
         exg = _compute_vegetation_index(image)
-        exg_mask = cv2.inRange(exg, spec.get("excess_green_min", 12), 255)
+        if drone_mode:
+            exg_thresh = compute_adaptive_green_threshold(
+                image, base_min=spec.get("excess_green_min", 12), percentile=3)
+        else:
+            exg_thresh = spec.get("excess_green_min", 12)
+        exg_mask = cv2.inRange(exg, exg_thresh, 255)
         # 3. CGI (Chlorophyll Green-Red Index)
         cgi = _compute_cgi(image)
-        cgi_mask = cv2.inRange(cgi, 165, 255)
-        # 4. LAB a-channel (green<128<red)
-        lab_green = cv2.inRange(lab[:, :, 1], 0, 118)
+        cgi_thresh = 155 if drone_mode else 165
+        cgi_mask = cv2.inRange(cgi, cgi_thresh, 255)
+        # 4. LAB a-channel (green<128<red) — wider range for drone
+        lab_hi = 125 if drone_mode else 118
+        lab_green = cv2.inRange(lab[:, :, 1], 0, lab_hi)
         # 5. YCrCb: green has low Cr
         ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, 130)
+        ycrcb_hi = 140 if drone_mode else 130
+        ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, ycrcb_hi)
 
         # Fuse: HSV is required, at least N of {ExG, CGI, LAB, YCrCb} must agree.
         # Very blurry frames lose colour discrimination, so require fewer signals.
-        required_signals = 2 if blur_level < 0.75 else 1
+        # Drone mode: also relaxed signal count due to aerial noise.
+        if drone_mode:
+            required_signals = 1 if blur_level >= 0.5 else 2
+        else:
+            required_signals = 2 if blur_level < 0.75 else 1
         vegetation = cv2.bitwise_or(cv2.bitwise_or(exg_mask, cgi_mask),
                                     cv2.bitwise_or(lab_green, ycrcb_green))
         signals = np.zeros(hsv.shape[:2], np.uint8)
@@ -1473,7 +1558,10 @@ class Analyzer:
         edge_k = max(3, spec.get("edge_close_kernel", 5) - (1 if blur_level >= 0.5 else 0))
         ekernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_k, edge_k))
         combined = cv2.morphologyEx(combined, cv2.MORPH_DILATE, ekernel)
-        combined = self._clean(combined, size=max(3, spec.get("adaptive_blur", 5)))
+        clean_size = max(3, spec.get("adaptive_blur", 5))
+        if drone_mode:
+            clean_size = min(7, clean_size + 2)
+        combined = self._clean(combined, size=clean_size)
 
         # Scale-aware secondary cleanup
         h, w = image.shape[:2]
@@ -1483,7 +1571,8 @@ class Analyzer:
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, mk)
 
         # Suppress very dark pixels (likely noise/shadow)
-        v_suppress = cv2.inRange(hsv[:, :, 2], 15, 255)
+        v_floor = 10 if drone_mode else 15
+        v_suppress = cv2.inRange(hsv[:, :, 2], v_floor, 255)
         combined = cv2.bitwise_and(combined, v_suppress)
 
         # Foreground constraint: if fg_mask provided, only keep leaf within foreground
@@ -1494,21 +1583,27 @@ class Analyzer:
         if edge_refine and spec.get("edge_refine", True):
             combined = _edge_refine_mask(image, combined)
 
-        # Fill small holes
+        # Fill small holes (larger kernel for drone to merge fragmented regions)
+        fill_k = 9 if drone_mode else 7
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,
-                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fill_k, fill_k)))
         return combined
 
     def _build_fruit_mask(self, image, hsv, lab, leaf_mask, spec, fg_mask=None,
-                          blur_level=0.0):
+                          blur_level=0.0, drone_mode=False):
         """Multi-signal fruit mask: HSV yellow-green + ripe + Hough circles.
 
         blur_level lowers the saturation/LAB floors so desaturated, blurred
         fruit still registers (only for genuinely blurry frames).
+        drone_mode relaxes thresholds for aerial images.
         """
         relax = max(0.0, (blur_level - 0.5) * 2.0)          # 0..1 for blur>=0.5
-        sat_floor = int(max(50, spec["fruit_saturation_min"] - relax * 25))
-        lab_b_floor = int(max(110, spec.get("fruit_lab_b_min", 145) - relax * 30))
+        sat_relax = 15 if drone_mode else 0
+        lab_relax = 20 if drone_mode else 0
+        sat_floor = int(max(35 if drone_mode else 50,
+                            spec["fruit_saturation_min"] - relax * 25 - sat_relax))
+        lab_b_floor = int(max(90 if drone_mode else 110,
+                              spec.get("fruit_lab_b_min", 145) - relax * 30 - lab_relax))
         yellow_green = cv2.inRange(hsv,
                                    (spec["fruit_hue_yellow"][0], sat_floor, spec["fruit_value_min"]),
                                    (spec["fruit_hue_yellow"][1], 255, 255))
@@ -1787,8 +1882,10 @@ class Analyzer:
             fg_mask = _adaptive_fg_mask(processed, spec)
 
         # === LEAF ===
+        is_drone = adapted.get("_resolution_mode", "normal") in ("low", "very_low")
         leaf_mask = self._build_leaf_mask(processed, hsv, lab, spec, fg_mask,
-                                          edge_refine=edge_refine, blur_level=blur_level)
+                                          edge_refine=edge_refine, blur_level=blur_level,
+                                          drone_mode=is_drone)
         # A dense canopy is one giant component far above leaf_max_area; split
         # it into leaf-sized clusters before contour extraction.
         leaf_mask = self._split_large_components(
@@ -1838,7 +1935,7 @@ class Analyzer:
 
         # === FRUIT ===
         fruit_mask = self._build_fruit_mask(processed, hsv, lab, leaf_mask, spec, fg_mask,
-                                            blur_level=blur_level)
+                                            blur_level=blur_level, drone_mode=is_drone)
         fruit_masks_ind = _watershed_split(processed, fruit_mask,
                                            min_dist=spec.get("watershed_mindist", 20))
         all_fruit_contours = []

@@ -10,6 +10,8 @@ import numpy as np
 from src.runtime import (Analyzer, Store, analyze_health_trend,
                          load_runtime_config, save_observation,
                          scale_detection_for_resolution,
+                         normalize_illumination,
+                         compute_adaptive_green_threshold,
                          _detect_qr_tree_id, _QR_TREE_RE)
 
 
@@ -456,6 +458,58 @@ class ResolutionAdaptationTest(unittest.TestCase):
         original_leaf_min = self.config["detection"]["leaf_min_area"]
         scale_detection_for_resolution(self.config, 720)
         self.assertEqual(self.config["detection"]["leaf_min_area"], original_leaf_min)
+
+
+class DroneEnhancementTest(unittest.TestCase):
+    """Tests for drone-specific image enhancement functions."""
+
+    def test_normalize_illumination_preserves_shape(self):
+        """Normalization should preserve image dimensions."""
+        image = np.random.randint(0, 255, (100, 120, 3), dtype=np.uint8)
+        result = normalize_illumination(image)
+        self.assertEqual(result.shape, image.shape)
+        self.assertEqual(result.dtype, np.uint8)
+
+    def test_normalize_illumination_brightens_dark(self):
+        """Normalization should brighten very dark images."""
+        dark = np.zeros((100, 100, 3), dtype=np.uint8)
+        dark[:, :, :] = 10
+        result = normalize_illumination(dark)
+        # L channel CLAHE should increase brightness
+        self.assertGreater(np.mean(result), np.mean(dark))
+
+    def test_adaptive_threshold_returns_positive(self):
+        """Adaptive threshold should return a positive integer."""
+        image = np.random.randint(0, 255, (100, 120, 3), dtype=np.uint8)
+        # Add some green
+        image[30:70, 30:70, 1] = 200
+        thresh = compute_adaptive_green_threshold(image, base_min=10)
+        self.assertGreaterEqual(thresh, 10)
+        self.assertIsInstance(thresh, int)
+
+    def test_adaptive_threshold_no_green_low(self):
+        """Image with no green should return base_min."""
+        # Pure red image
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        image[:, :, 2] = 200
+        thresh = compute_adaptive_green_threshold(image, base_min=10)
+        self.assertEqual(thresh, 10)
+
+    def test_drone_leaf_mask_produces_result(self):
+        """Drone mode leaf mask should produce a valid binary mask."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, resolution_mode="normal")
+        image = np.zeros((100, 120, 3), dtype=np.uint8)
+        # Add green region
+        image[20:80, 20:100, 1] = 180
+        image[20:80, 20:100, 0] = 50
+        image[20:80, 20:100, 2] = 50
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        spec = config["detection"]
+        mask = analyzer._build_leaf_mask(image, hsv, lab, spec, drone_mode=True)
+        self.assertEqual(mask.shape[:2], image.shape[:2])
+        self.assertEqual(len(np.unique(mask)), 2)  # binary
 
 
 if __name__ == "__main__":
