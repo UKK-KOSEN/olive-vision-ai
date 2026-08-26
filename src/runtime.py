@@ -277,24 +277,6 @@ def compute_adaptive_green_threshold(image, base_min=10, percentile=5):
     return min(adaptive, 30)  # cap at 30 to avoid over-tightening
 
 
-def _compute_vegetation_index(image):
-    """Excess Green Index (ExG) = 2*g - r - b (normalized 0-255)."""
-    f = image.astype(np.float32)
-    total = f[:, :, 0] + f[:, :, 1] + f[:, :, 2] + 1e-6
-    r, g, b = f[:, :, 2] / total, f[:, :, 1] / total, f[:, :, 0] / total
-    exg = (2.0 * g - r - b + 1.0) * 127.5
-    return np.clip(exg, 0, 255).astype(np.uint8)
-
-
-def _compute_cgi(image):
-    """Chlorophyll Green-Red Index: 128*(G-R)/(G+R)+128."""
-    f = image.astype(np.float32)
-    g = f[:, :, 1]
-    r = f[:, :, 2]
-    cgi = 128.0 * (g - r) / (g + r + 1e-6) + 128.0
-    return np.clip(cgi, 0, 255).astype(np.uint8)
-
-
 def build_logger(verbose: bool = False) -> logging.Logger:
     logger = logging.getLogger("olivevision.runtime")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
