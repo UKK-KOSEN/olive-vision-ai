@@ -9,6 +9,7 @@ import numpy as np
 
 from src.runtime import (Analyzer, Store, analyze_health_trend,
                          load_runtime_config, save_observation,
+                         scale_detection_for_resolution,
                          _detect_qr_tree_id, _QR_TREE_RE)
 
 
@@ -402,6 +403,59 @@ class RuntimeTest(unittest.TestCase):
             # Each stored row should have a source starting with "video:".
             for r in rows:
                 self.assertTrue(r.get("source", "").startswith("video:"))
+
+
+class ResolutionAdaptationTest(unittest.TestCase):
+    """Tests for resolution-adaptive parameter scaling."""
+
+    def setUp(self):
+        self.config = load_runtime_config(Path("config/runtime.yaml"))
+
+    def test_high_res_no_change(self):
+        """High-res images should not be scaled."""
+        result = scale_detection_for_resolution(self.config, 1280)
+        self.assertEqual(result["detection"]["leaf_min_area"],
+                         self.config["detection"]["leaf_min_area"])
+
+    def test_low_res_scales_areas(self):
+        """Low-res images should have smaller area thresholds."""
+        original_leaf_min = self.config["detection"]["leaf_min_area"]
+        result = scale_detection_for_resolution(self.config, 720)
+        self.assertLess(result["detection"]["leaf_min_area"], original_leaf_min)
+        self.assertLess(result["detection"]["fruit_min_area"],
+                        self.config["detection"]["fruit_min_area"])
+
+    def test_very_low_res_scales_more(self):
+        """Very low-res images should have even smaller thresholds."""
+        low = scale_detection_for_resolution(self.config, 720)
+        very_low = scale_detection_for_resolution(self.config, 480)
+        self.assertLess(very_low["detection"]["leaf_min_area"],
+                        low["detection"]["leaf_min_area"])
+
+    def test_preserves_non_area_params(self):
+        """Non-area parameters should not be changed."""
+        result = scale_detection_for_resolution(self.config, 720)
+        self.assertEqual(result["detection"]["leaf_hue"],
+                         self.config["detection"]["leaf_hue"])
+        self.assertEqual(result["detection"]["fruit_hue_yellow"],
+                         self.config["detection"]["fruit_hue_yellow"])
+
+    def test_resolution_mode_recorded(self):
+        """Resolution mode should be recorded in the result."""
+        result = scale_detection_for_resolution(self.config, 720)
+        self.assertIn("_resolution_mode", result)
+        self.assertEqual(result["_resolution_mode"], "low")
+
+    def test_very_low_mode_recorded(self):
+        """Very low resolution mode should be recorded."""
+        result = scale_detection_for_resolution(self.config, 480)
+        self.assertEqual(result["_resolution_mode"], "very_low")
+
+    def test_original_config_not_mutated(self):
+        """Original config should never be modified."""
+        original_leaf_min = self.config["detection"]["leaf_min_area"]
+        scale_detection_for_resolution(self.config, 720)
+        self.assertEqual(self.config["detection"]["leaf_min_area"], original_leaf_min)
 
 
 if __name__ == "__main__":

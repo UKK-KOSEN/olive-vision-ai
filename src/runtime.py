@@ -173,6 +173,74 @@ def load_runtime_config(path: Optional[Path] = None) -> dict:
     return config
 
 
+def scale_detection_for_resolution(config: dict, image_width: int) -> dict:
+    """Scale detection parameters based on image resolution.
+
+    For low-resolution images (e.g. drone captures), area-based thresholds
+    and other size-dependent parameters are scaled down proportionally.
+    This function returns a NEW config dict with scaled values; the
+    original config is never mutated.
+
+    Args:
+        config: Runtime configuration dict
+        image_width: Width of the input image in pixels
+
+    Returns:
+        Config dict with resolution-scaled detection parameters
+    """
+    import copy
+    presets = config.get("resolution_presets", {})
+    base = presets.get("base_resolution", 1280)
+    low_thr = presets.get("low_res_threshold", 900)
+
+    if image_width >= low_thr:
+        return config
+
+    factor = image_width / base
+    is_very_low = image_width < (low_thr * 0.6)
+
+    if is_very_low:
+        scale = presets.get("very_low_res", presets.get("low_res", {}))
+    else:
+        scale = presets.get("low_res", {})
+
+    if not scale:
+        return config
+
+    scaled = copy.deepcopy(config)
+    det = scaled.get("detection", {})
+
+    area_keys = [
+        "leaf_min_area", "leaf_max_area",
+        "fruit_min_area", "fruit_max_area",
+        "fruit_no_circle_min_area", "fruit_no_circle_max_area",
+        "wrinkle_min_reliable_area",
+    ]
+    for key in area_keys:
+        if key in det and key in scale:
+            multiplier = scale[key]
+            det[key] = max(10, int(det[key] * multiplier))
+
+    float_keys = [
+        "leaf_min_solidity", "fruit_min_solidity",
+        "fruit_min_circularity", "fg_min_area_ratio",
+    ]
+    for key in float_keys:
+        if key in det and key in scale:
+            det[key] = scale[key]
+
+    if "watershed_mindist" in det and "watershed_mindist" in scale:
+        det["watershed_mindist"] = max(5, int(det["watershed_mindist"] * scale["watershed_mindist"]))
+
+    if "multiscale_scales" in scale:
+        det["multiscale_scales"] = scale["multiscale_scales"]
+
+    scaled["detection"] = det
+    scaled["_resolution_scale"] = round(factor, 3)
+    scaled["_resolution_mode"] = "very_low" if is_very_low else "low"
+    return scaled
+
+
 def build_logger(verbose: bool = False) -> logging.Logger:
     logger = logging.getLogger("olivevision.runtime")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -1287,8 +1355,25 @@ class _CentroidTracker:
 # ===================================================================
 
 class Analyzer:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, resolution_mode: str = "auto"):
+        """Initialize the analyzer.
+
+        Args:
+            config: Runtime configuration dict
+            resolution_mode: "auto" (scale based on image width),
+                           "normal" (no scaling),
+                           "low" (force low-res scaling),
+                           "very_low" (force very-low-res scaling)
+        """
         self.config = config
+        self.resolution_mode = resolution_mode
+
+    def _adapt_for_resolution(self, image: np.ndarray) -> dict:
+        """Return config scaled for the input image resolution."""
+        if self.resolution_mode == "normal":
+            return self.config
+        w = image.shape[1]
+        return scale_detection_for_resolution(self.config, w)
 
     def _resize(self, image: np.ndarray) -> np.ndarray:
         maximum = int(self.config["runtime"]["max_width"])
@@ -1662,12 +1747,13 @@ class Analyzer:
     def analyze(self, image: np.ndarray, source: str,
                 image_path: Optional[str] = None) -> Tuple[dict, np.ndarray]:
         image = self._resize(image)
+        adapted = self._adapt_for_resolution(image)
+        spec = adapted["detection"]
         blur_raw = _estimate_blur(image)
         # Laplacian variance is low for smooth matte foliage even when in focus,
         # so only genuinely blurry frames should be treated as blurry.
         # blur_raw >= 180 -> 0 (sharp/typical), 20 -> ~1.0 (very blurry).
         blur_level = round(min(1.0, max(0.0, (180.0 - blur_raw) / 160.0)), 3)
-        spec = self.config["detection"]
         # In blurry frames, skip the aggressive edge-snapping refinement so
         # soft boundaries of blurred objects are not eroded away.
         edge_refine = spec.get("edge_refine", True) and blur_level < 0.75
@@ -1743,8 +1829,8 @@ class Analyzer:
         # Leaf curling (巻き込み): roll inward to reduce transpiration.
         # Computed from contour shape (solidity gap + convexity defects + aspect).
         for d in leaf_descs:
-            d["curl_score"] = _compute_leaf_curl_score(d, self.config["detection"])
-            d["curl_label"] = _curl_label(d["curl_score"], self.config["detection"])
+            d["curl_score"] = _compute_leaf_curl_score(d, adapted["detection"])
+            d["curl_label"] = _curl_label(d["curl_score"], adapted["detection"])
         curl_scores = [d["curl_score"] for d in leaf_descs] if leaf_descs else []
         avg_curl = float(np.mean(curl_scores)) if curl_scores else 0.0
         # Fraction of leaves exhibiting significant curling (score >= 0.25).
@@ -1805,7 +1891,7 @@ class Analyzer:
             d["hue"] = round(hue, 1)
             d["saturation"] = round(sat, 1)
             d["lab_b"] = round(bval, 1)
-            wr = _compute_wrinkle_score(fruit_gray, m, cfg=self.config.get("detection", {}))
+            wr = _compute_wrinkle_score(fruit_gray, m, cfg=adapted.get("detection", {}))
             d["wrinkle_score"] = wr["wrinkle_score"]
             d["wrinkle_label"] = wr["wrinkle_label"]
             d["wrinkle_reliable"] = wr.get("wrinkle_reliable", True)
@@ -1937,6 +2023,8 @@ class Analyzer:
         result = {
             "observed_at": now(), "source": source, "image_path": image_path,
             "tree_id": tree_id,
+            "resolution_mode": adapted.get("_resolution_mode", "normal"),
+            "resolution_scale": adapted.get("_resolution_scale", 1.0),
             "leaf_count": leaf_count, "fruit_count": fruit_count, "green_coverage": green_pct,
             "image_width": int(image.shape[1]), "image_height": int(image.shape[0]),
             "leaf_color_stage": leaf_stage, "leaf_senescence": leaf_senes,
@@ -1983,7 +2071,7 @@ class Analyzer:
             "analysis_details": _compute_analysis_details(
                 leaf_objects, fruit_objects, image, leaf_mask, fruit_det_mask,
                 leaf_senes, fruit_maturity_counts, avg_curl, curled_pct,
-                leaf_roughness, avg_ls, blur_level, cfg=self.config),
+                leaf_roughness, avg_ls, blur_level, cfg=adapted),
         }
         # Strip internal contours (numpy arrays) that are not JSON-serializable.
         for lo in result.get("leaf_objects", []):

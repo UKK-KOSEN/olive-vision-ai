@@ -130,3 +130,42 @@ video:
   output_fps: 5
   track_max_age: 30
   track_iou_threshold: 0.3
+
+# Resolution-adaptive presets for drone/aerial images.
+# Parameters are scaled relative to the base resolution (1280px).
+# Scale factor = actual_width / base_resolution
+# Areas scale by factor^2, lengths by factor.
+resolution_presets:
+  base_resolution: 1280
+  # Low-res threshold: images below this width use scaled params
+  low_res_threshold: 900
+  # Scale factors for area-based parameters (applied as multiplier)
+  low_res:
+    leaf_min_area: 0.35       # 350 -> ~122 for 720p
+    leaf_max_area: 0.40       # 30000 -> ~12000
+    fruit_min_area: 0.35      # 250 -> ~87
+    fruit_max_area: 0.40      # 18000 -> ~7200
+    fruit_no_circle_min_area: 0.35
+    fruit_no_circle_max_area: 0.40
+    wrinkle_min_reliable_area: 0.35
+    leaf_min_solidity: 0.90   # slightly stricter for noisy low-res
+    fruit_min_solidity: 0.90
+    fruit_min_circularity: 0.55
+    watershed_mindist: 0.6    # 20 -> ~12
+    multiscale_scales: [0.85, 1.0, 1.15]  # tighter scale range
+    fg_min_area_ratio: 0.008
+  # Very low-res (480p and below)
+  very_low_res:
+    leaf_min_area: 0.20
+    leaf_max_area: 0.25
+    fruit_min_area: 0.20
+    fruit_max_area: 0.25
+    fruit_no_circle_min_area: 0.20
+    fruit_no_circle_max_area: 0.25
+    wrinkle_min_reliable_area: 0.20
+    leaf_min_solidity: 0.92
+    fruit_min_solidity: 0.92
+    fruit_min_circularity: 0.60
+    watershed_mindist: 0.5
+    multiscale_scales: [0.9, 1.0, 1.1]
+    fg_min_area_ratio: 0.01

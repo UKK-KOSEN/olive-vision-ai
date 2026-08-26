@@ -36,7 +36,8 @@ def _error(msg, hint=None, details=None):
 
 def resources(args):
     config = load_runtime_config(args.config)
-    return Analyzer(config), Store(args.database), config
+    mode = "normal" if not getattr(args, "drone", False) else "auto"
+    return Analyzer(config, resolution_mode=mode), Store(args.database), config
 
 def show(result):
     clean = {k: v for k, v in result.items() if not isinstance(v, np.ndarray)}
@@ -316,6 +317,10 @@ def _print_summary_body(result):
     stage = result.get("leaf_color_stage", "?")
     mat = result.get("fruit_maturity", "?")
     wr = result.get("wrinkled_fruit_count", 0)
+    res_mode = result.get("resolution_mode", "normal")
+    res_scale = result.get("resolution_scale", 1.0)
+    w = result.get("image_width", "?")
+    h = result.get("image_height", "?")
     lines.append(f"  {bold('Leaves')}   {leaves}")
     fruits_line = f"  {bold('Fruits')}   {fruits}"
     if wr:
@@ -323,6 +328,10 @@ def _print_summary_body(result):
     lines.append(fruits_line)
     lines.append(f"  {bold('Green')}    {green_cov:.1f}%   (leaf stage: {stage})")
     lines.append(f"  {bold('Maturity')} {mat}")
+    if res_mode != "normal":
+        lines.append(f"  {bold('Resolution')} {w}x{h}  mode={cyan(res_mode)}  scale={res_scale}")
+    else:
+        lines.append(f"  {bold('Resolution')} {w}x{h}")
     return "\n".join(lines)
 
 def _cli_diagnostics_text(result):
@@ -1949,8 +1958,8 @@ def _risk_color(risk):
 def parser():
     common=argparse.ArgumentParser(add_help=False); common.add_argument("--config",default=str(ROOT/"config"/"runtime.yaml")); common.add_argument("--database",default=str(ROOT/"data"/"database"/"olivevision.db")); common.add_argument("--output",default=str(ROOT/"outputs"/"observations")); common.add_argument("--verbose",action="store_true")
     p=argparse.ArgumentParser(description="OliveVision: Raspberry Pi friendly local olive monitoring"); sub=p.add_subparsers(dest="command",required=True)
-    x=sub.add_parser("analyze",parents=[common],help="analyse one image and save its record"); x.add_argument("image"); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.set_defaults(func=analyze_file)
-    x=sub.add_parser("capture",parents=[common],help="capture and analyse one camera frame"); x.add_argument("--camera",type=int,default=0); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.set_defaults(func=capture)
+    x=sub.add_parser("analyze",parents=[common],help="analyse one image and save its record"); x.add_argument("image"); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.add_argument("--drone",action="store_true",help="enable low-resolution (drone/aerial) detection mode"); x.set_defaults(func=analyze_file)
+    x=sub.add_parser("capture",parents=[common],help="capture and analyse one camera frame"); x.add_argument("--camera",type=int,default=0); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.add_argument("--drone",action="store_true",help="enable low-resolution (drone/aerial) detection mode"); x.set_defaults(func=capture)
     x=sub.add_parser("monitor",parents=[common],help="periodically capture and analyse camera frames"); x.add_argument("--camera",type=int,default=0,help="camera device index (default 0)"); x.add_argument("--interval",type=int,default=3600,help="seconds between captures (default 3600)"); x.add_argument("--tree",type=str,default=None,help="associate observations with a trial tree ID"); x.add_argument("--limit",type=int,default=0,help="stop after N cycles (0 = unlimited)"); x.set_defaults(func=monitor)
     x=sub.add_parser("status",parents=[common],help="display latest local observations"); x.add_argument("--limit",type=int,default=20); x.add_argument("--tree",type=str,default=None,help="filter by trial tree ID (e.g. 第1試験樹)"); x.set_defaults(func=status)
     x=sub.add_parser("export",parents=[common],help="export the local database to CSV"); x.add_argument("csv"); x.set_defaults(func=export)
