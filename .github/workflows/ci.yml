@@ -88,15 +88,19 @@ jobs:
 
       - name: Run security scan (SARIF)
         run: |
-          bandit -r src/ -ll --skip B101,B110 -f sarif -o bandit-report.sarif || true
+          bandit -r src/ -ll --skip B101,B110 -f sarif -o bandit-report.sarif
+          echo "SARIF report generated"
+          ls -la bandit-report.sarif || echo "SARIF file not created"
 
       - name: Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: bandit-report.sarif
+          category: bandit
 
       - name: Run security scan (summary)
+        if: always()
         run: |
           bandit -r src/ -ll --skip B101,B110 || true
 
@@ -141,7 +145,6 @@ jobs:
       - name: Check for version bump on release PR
         if: github.event_name == 'pull_request'
         run: |
-          # Check if VERSION file changed in this PR
           if git diff --name-only origin/main...HEAD | grep -q "^VERSION$"; then
             NEW_VERSION=$(cat VERSION | tr -d '[:space:]')
             echo "Version bump detected: $NEW_VERSION"
