@@ -5,6 +5,7 @@ continuously on a Raspberry Pi and to keep every measurement locally.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import logging
@@ -1391,7 +1392,8 @@ class _CentroidTracker:
 # ===================================================================
 
 class Analyzer:
-    def __init__(self, config: dict, resolution_mode: str = "auto"):
+    def __init__(self, config: dict, resolution_mode: str = "auto",
+                 drone_mode: bool = False):
         """Initialize the analyzer.
 
         Args:
@@ -1400,12 +1402,21 @@ class Analyzer:
                            "normal" (no scaling),
                            "low" (force low-res scaling),
                            "very_low" (force very-low-res scaling)
+            drone_mode: True to enable aerial/drone detection enhancements
+                       (wider HSV, relaxed thresholds, adapted morphology).
+                       Independent of resolution_mode.
         """
         self.config = config
         self.resolution_mode = resolution_mode
+        self.drone_mode = drone_mode
 
     def _adapt_for_resolution(self, image: np.ndarray) -> dict:
         """Return config scaled for the input image resolution."""
+        if self.drone_mode:
+            # Drone mode uses its own detection parameters; skip resolution scaling
+            scaled = copy.deepcopy(self.config)
+            scaled["_resolution_mode"] = "drone"
+            return scaled
         if self.resolution_mode == "normal":
             return self.config
         w = image.shape[1]
@@ -1475,16 +1486,15 @@ class Analyzer:
         adaptive thresholds, wider HSV ranges.
         """
         # --- Drone-specific preprocessing ---
+        # NOTE: normalize_illumination is NOT used here because CLAHE shifts
+        # hue values (e.g. green H=35-70 -> H=15-25), breaking detection.
         if drone_mode:
-            # Color-normalize to reduce lighting variation
-            image_norm = normalize_illumination(image)
-            hsv = cv2.cvtColor(image_norm, cv2.COLOR_BGR2HSV)
-            lab = cv2.cvtColor(image_norm, cv2.COLOR_BGR2LAB)
             # Wider HSV green range for aerial views (lighting varies more)
-            hue_lo = max(25, spec["leaf_hue"][0] - 8)
-            hue_hi = min(100, spec["leaf_hue"][1] + 8)
-            sat_floor_val = max(18, spec["leaf_saturation_min"] - 12)
-            val_floor = max(18, spec["leaf_value_min"] - 10)
+            # Keep H>=25 to avoid brown/sky artifacts; extend upper for yellow-green
+            hue_lo = max(25, spec["leaf_hue"][0] - 5)
+            hue_hi = min(100, spec["leaf_hue"][1] + 5)
+            sat_floor_val = max(15, spec["leaf_saturation_min"] - 18)
+            val_floor = max(12, spec["leaf_value_min"] - 13)
         else:
             hue_lo, hue_hi = spec["leaf_hue"]
             sat_floor_val = spec["leaf_saturation_min"]
@@ -1501,27 +1511,27 @@ class Analyzer:
         exg = _compute_vegetation_index(image)
         if drone_mode:
             exg_thresh = compute_adaptive_green_threshold(
-                image, base_min=spec.get("excess_green_min", 12), percentile=3)
+                image, base_min=8, percentile=3)
         else:
             exg_thresh = spec.get("excess_green_min", 12)
         exg_mask = cv2.inRange(exg, exg_thresh, 255)
-        # 3. CGI (Chlorophyll Green-Red Index)
+        # 3. CGI (Chlorophyll Green-Red Index) — lower threshold for aerial
         cgi = _compute_cgi(image)
-        cgi_thresh = 155 if drone_mode else 165
+        cgi_thresh = 140 if drone_mode else 165
         cgi_mask = cv2.inRange(cgi, cgi_thresh, 255)
         # 4. LAB a-channel (green<128<red) — wider range for drone
-        lab_hi = 125 if drone_mode else 118
+        lab_hi = 130 if drone_mode else 118
         lab_green = cv2.inRange(lab[:, :, 1], 0, lab_hi)
         # 5. YCrCb: green has low Cr
         ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        ycrcb_hi = 140 if drone_mode else 130
+        ycrcb_hi = 145 if drone_mode else 130
         ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, ycrcb_hi)
 
         # Fuse: HSV is required, at least N of {ExG, CGI, LAB, YCrCb} must agree.
         # Very blurry frames lose colour discrimination, so require fewer signals.
-        # Drone mode: also relaxed signal count due to aerial noise.
+        # Drone mode: relaxed signal count due to aerial noise.
         if drone_mode:
-            required_signals = 1 if blur_level >= 0.5 else 2
+            required_signals = 1
         else:
             required_signals = 2 if blur_level < 0.75 else 1
         vegetation = cv2.bitwise_or(cv2.bitwise_or(exg_mask, cgi_mask),
@@ -1864,10 +1874,9 @@ class Analyzer:
             fg_mask = _adaptive_fg_mask(processed, spec)
 
         # === LEAF ===
-        is_drone = adapted.get("_resolution_mode", "normal") in ("low", "very_low")
         leaf_mask = self._build_leaf_mask(processed, hsv, lab, spec, fg_mask,
                                           edge_refine=edge_refine, blur_level=blur_level,
-                                          drone_mode=is_drone)
+                                          drone_mode=self.drone_mode)
         # A dense canopy is one giant component far above leaf_max_area; split
         # it into leaf-sized clusters before contour extraction.
         leaf_mask = self._split_large_components(
@@ -1917,7 +1926,7 @@ class Analyzer:
 
         # === FRUIT ===
         fruit_mask = self._build_fruit_mask(processed, hsv, lab, leaf_mask, spec, fg_mask,
-                                            blur_level=blur_level, drone_mode=is_drone)
+                                            blur_level=blur_level, drone_mode=self.drone_mode)
         fruit_masks_ind = _watershed_split(processed, fruit_mask,
                                            min_dist=spec.get("watershed_mindist", 20))
         all_fruit_contours = []

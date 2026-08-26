@@ -498,7 +498,7 @@ class DroneEnhancementTest(unittest.TestCase):
     def test_drone_leaf_mask_produces_result(self):
         """Drone mode leaf mask should produce a valid binary mask."""
         config = load_runtime_config(Path("config/runtime.yaml"))
-        analyzer = Analyzer(config, resolution_mode="normal")
+        analyzer = Analyzer(config, resolution_mode="normal", drone_mode=True)
         image = np.zeros((100, 120, 3), dtype=np.uint8)
         # Add green region
         image[20:80, 20:100, 1] = 180
@@ -510,6 +510,17 @@ class DroneEnhancementTest(unittest.TestCase):
         mask = analyzer._build_leaf_mask(image, hsv, lab, spec, drone_mode=True)
         self.assertEqual(mask.shape[:2], image.shape[:2])
         self.assertEqual(len(np.unique(mask)), 2)  # binary
+
+    def test_drone_mode_flag_independent_of_resolution(self):
+        """drone_mode should work regardless of image resolution."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        # Large image (above threshold) but drone_mode=True
+        analyzer = Analyzer(config, resolution_mode="normal", drone_mode=True)
+        self.assertTrue(analyzer.drone_mode)
+        image = np.zeros((100, 120, 3), dtype=np.uint8)
+        image[20:80, 20:100, 1] = 180
+        adapted = analyzer._adapt_for_resolution(image)
+        self.assertEqual(adapted.get("_resolution_mode"), "drone")
 
 
 if __name__ == "__main__":

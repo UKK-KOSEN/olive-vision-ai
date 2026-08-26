@@ -36,8 +36,8 @@ def _error(msg, hint=None, details=None):
 
 def resources(args):
     config = load_runtime_config(args.config)
-    mode = "normal" if not getattr(args, "drone", False) else "auto"
-    return Analyzer(config, resolution_mode=mode), Store(args.database), config
+    drone = getattr(args, "drone", False)
+    return Analyzer(config, resolution_mode="auto", drone_mode=drone), Store(args.database), config
 
 def show(result):
     clean = {k: v for k, v in result.items() if not isinstance(v, np.ndarray)}
