@@ -278,6 +278,98 @@ def compute_adaptive_green_threshold(image, base_min=10, percentile=5):
     return min(adaptive, 30)  # cap at 30 to avoid over-tightening
 
 
+def compute_sky_mask(image, min_area_ratio=0.01):
+    """Detect sky regions in aerial/drone images.
+
+    Sky: H=85-135 (cyan-blue), moderate-high V, NOT low-saturation vegetation.
+    Returns a binary mask where 255=sky.
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+    # Sky: blue-cyan hue, moderate-high saturation, bright
+    # Exclude S<15 (vegetation can be low-sat) and V<120 (dark areas)
+    sky = cv2.inRange(hsv, (85, 40, 140), (135, 255, 255))
+
+    # Also catch overcast/white sky: very bright, very low saturation
+    bright_wash = cv2.bitwise_and(
+        cv2.inRange(v, 200, 255),
+        cv2.inRange(s, 0, 25))
+    sky = cv2.bitwise_or(sky, bright_wash)
+
+    # Morphological cleanup
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    sky = cv2.morphologyEx(sky, cv2.MORPH_CLOSE, kernel)
+    sky = cv2.morphologyEx(sky, cv2.MORPH_OPEN, kernel)
+
+    # Ignore tiny regions
+    contours, _ = cv2.findContours(sky, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    total = image.shape[0] * image.shape[1]
+    result = np.zeros_like(sky)
+    for c in contours:
+        if cv2.contourArea(c) > total * min_area_ratio:
+            cv2.drawContours(result, [c], -1, 255, -1)
+    return result
+
+
+def compute_adaptive_hsv_green_range(image, base_hue=(30, 95)):
+    """Find the best HSV green range from the image's color histogram.
+
+    Analyzes the H channel to find the dominant green peak and returns
+    an adaptive range around it. Falls back to base_hue if no clear peak.
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+    # Only consider pixels with meaningful saturation and brightness
+    mask = (s > 15) & (v > 15)
+    h_vals = h[mask]
+    if len(h_vals) < 500:
+        return base_hue
+
+    # Build H histogram in the green-relevant range (20-110)
+    green_range = h_vals[(h_vals >= 20) & (h_vals <= 110)]
+    if len(green_range) < 200:
+        return base_hue
+
+    hist, bins = np.histogram(green_range, bins=range(20, 115, 5))
+
+    # Find the peak bin
+    peak_idx = np.argmax(hist)
+    peak_h = (bins[peak_idx] + bins[peak_idx + 1]) / 2
+
+    # Extend range: include bins with >20% of peak count
+    threshold = hist[peak_idx] * 0.2
+    lo, hi = peak_h, peak_h
+    for i in range(len(hist)):
+        if hist[i] >= threshold:
+            lo = min(lo, (bins[i] + bins[i + 1]) / 2)
+            hi = max(hi, (bins[i] + bins[i + 1]) / 2)
+
+    # Add margin
+    lo = max(20, lo - 8)
+    hi = min(110, hi + 8)
+
+    # Sanity check: range should be reasonable
+    if hi - lo < 15:
+        return base_hue
+    return (int(lo), int(hi))
+
+
+def compute_vegetation_ratio(image, sky_mask=None):
+    """Compute ratio of vegetation vs total non-sky pixels."""
+    exg = _compute_vegetation_index(image)
+    if sky_mask is not None:
+        non_sky = cv2.bitwise_not(sky_mask)
+        veg_in_scene = cv2.bitwise_and(exg, non_sky)
+        total_non_sky = max(1, (non_sky > 0).sum())
+        veg_pixels = (veg_in_scene > 15).sum()
+    else:
+        total_non_sky = image.shape[0] * image.shape[1]
+        veg_pixels = (exg > 15).sum()
+    return veg_pixels / total_non_sky
+
+
 def build_logger(verbose: bool = False) -> logging.Logger:
     logger = logging.getLogger("olivevision.runtime")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -1414,16 +1506,8 @@ class Analyzer:
         """Return config scaled for the input image resolution."""
         if self.drone_mode:
             # Drone mode: its own detection parameters; skip resolution scaling
-            # but reduce area thresholds for smaller aerial leaves
             scaled = copy.deepcopy(self.config)
             scaled["_resolution_mode"] = "drone"
-            det = scaled.get("detection", {})
-            # Lower area thresholds to catch smaller fragmented foliage
-            for key in ["leaf_min_area", "fruit_min_area", "wrinkle_min_reliable_area"]:
-                if key in det:
-                    det[key] = max(20, int(det[key] * 0.4))
-            if "fruit_no_circle_min_area" in det:
-                det["fruit_no_circle_min_area"] = max(50, int(det["fruit_no_circle_min_area"] * 0.4))
             return scaled
         if self.resolution_mode == "normal":
             return self.config
@@ -1497,15 +1581,16 @@ class Analyzer:
         # NOTE: normalize_illumination is NOT used here because CLAHE shifts
         # hue values (e.g. green H=35-70 -> H=15-25), breaking detection.
         if drone_mode:
-            # Wider HSV green range for aerial views
-            # H: 25-100 covers olive greens to yellow-greens
-            # S: 12 catches low-saturation shadow greens
-            # V: 8 catches very dark shadow vegetation
-            hue_lo = max(25, spec["leaf_hue"][0] - 5)
-            hue_hi = min(100, spec["leaf_hue"][1] + 5)
+            # Compute sky mask to exclude blue regions
+            sky_mask = compute_sky_mask(image)
+            # Adapt HSV range to actual green distribution in this image
+            adaptive_hue = compute_adaptive_hsv_green_range(image, base_hue=(30, 95))
+            hue_lo = max(20, min(adaptive_hue[0], spec["leaf_hue"][0]))
+            hue_hi = min(110, max(adaptive_hue[1], spec["leaf_hue"][1]))
             sat_floor_val = max(12, spec["leaf_saturation_min"] - 22)
             val_floor = max(8, spec["leaf_value_min"] - 17)
         else:
+            sky_mask = None
             hue_lo, hue_hi = spec["leaf_hue"]
             sat_floor_val = spec["leaf_saturation_min"]
             val_floor = spec["leaf_value_min"]
@@ -1583,6 +1668,10 @@ class Analyzer:
         if fg_mask is not None:
             combined = cv2.bitwise_and(combined, fg_mask)
 
+        # Sky exclusion: for drone images, remove pixels classified as sky
+        if drone_mode and sky_mask is not None:
+            combined = cv2.bitwise_and(combined, cv2.bitwise_not(sky_mask))
+
         # Edge-guided refinement (skipped in blurry frames to preserve soft edges)
         if edge_refine and spec.get("edge_refine", True):
             combined = _edge_refine_mask(image, combined)
@@ -1625,6 +1714,11 @@ class Analyzer:
         # Foreground constraint: if fg_mask provided, only keep fruit within foreground
         if fg_mask is not None:
             fruit = cv2.bitwise_and(fruit, fg_mask)
+
+        # Sky exclusion for drone images
+        if drone_mode:
+            sky = compute_sky_mask(image)
+            fruit = cv2.bitwise_and(fruit, cv2.bitwise_not(sky))
 
         # Hough circle mask overlay: boost fruit regions that contain circles.
         # Foliage blobs without circle evidence are dropped, EXCEPT for blobs
