@@ -4,6 +4,7 @@ from src.runtime import Analyzer, load_runtime_config
 
 config = load_runtime_config(Path('config/runtime.yaml'))
 for name in [
+    'drone.png',
     'outputs/observations/observation_20260826_180914_329093.jpg',
     'outputs/observations/observation_20260826_175813_978478.jpg',
     'outputs/observations/observation_20260826_181427_194681.jpg',

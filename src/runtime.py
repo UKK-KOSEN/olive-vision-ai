@@ -281,24 +281,27 @@ def compute_adaptive_green_threshold(image, base_min=10, percentile=5):
 def compute_sky_mask(image, min_area_ratio=0.01):
     """Detect sky regions in aerial/drone images.
 
-    Sky: H=85-135 (cyan-blue), moderate-high V, NOT low-saturation vegetation.
+    Conservative: only masks clearly-open sky, NOT sky visible through
+    tree gaps (which would erase vegetation).
     Returns a binary mask where 255=sky.
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
 
-    # Sky: blue-cyan hue, moderate-high saturation, bright
-    # Exclude S<15 (vegetation can be low-sat) and V<120 (dark areas)
-    sky = cv2.inRange(hsv, (85, 40, 140), (135, 255, 255))
+    # Only bright, saturated sky — avoid masking dim sky through foliage gaps
+    sky = cv2.inRange(hsv, (85, 60, 170), (135, 255, 255))
 
-    # Also catch overcast/white sky: very bright, very low saturation
+    # Overcast/white sky: very bright, very low saturation, but NOT near green
+    exg = _compute_vegetation_index(image)
     bright_wash = cv2.bitwise_and(
-        cv2.inRange(v, 200, 255),
-        cv2.inRange(s, 0, 25))
+        cv2.inRange(v, 210, 255),
+        cv2.inRange(s, 0, 20))
+    # Don't apply bright_wash where ExG shows vegetation
+    bright_wash = cv2.bitwise_and(bright_wash, cv2.inRange(exg, 0, 20))
     sky = cv2.bitwise_or(sky, bright_wash)
 
     # Morphological cleanup
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     sky = cv2.morphologyEx(sky, cv2.MORPH_CLOSE, kernel)
     sky = cv2.morphologyEx(sky, cv2.MORPH_OPEN, kernel)
 
@@ -1581,54 +1584,81 @@ class Analyzer:
         # NOTE: normalize_illumination is NOT used here because CLAHE shifts
         # hue values (e.g. green H=35-70 -> H=15-25), breaking detection.
         if drone_mode:
-            # Compute sky mask to exclude blue regions
+            # Drone mode: ExG identifies vegetation regions,
+            # then standard HSV+signal detection runs within those regions.
             sky_mask = compute_sky_mask(image)
-            # Adapt HSV range to actual green distribution in this image
-            adaptive_hue = compute_adaptive_hsv_green_range(image, base_hue=(30, 95))
-            hue_lo = max(20, min(adaptive_hue[0], spec["leaf_hue"][0]))
-            hue_hi = min(110, max(adaptive_hue[1], spec["leaf_hue"][1]))
-            sat_floor_val = max(12, spec["leaf_saturation_min"] - 22)
-            val_floor = max(8, spec["leaf_value_min"] - 17)
-        else:
-            sky_mask = None
-            hue_lo, hue_hi = spec["leaf_hue"]
-            sat_floor_val = spec["leaf_saturation_min"]
-            val_floor = spec["leaf_value_min"]
 
-        # 1. HSV green range. Saturation floor drops only in very blurry frames.
-        relax = max(0.0, (blur_level - 0.5) * 2.0)          # 0..1 for blur>=0.5
-        sat_floor = int(max(25 if not drone_mode else sat_floor_val,
-                            sat_floor_val - relax * 25))
-        hsv_mask = cv2.inRange(hsv,
-                               (hue_lo, max(sat_floor, 25 if not drone_mode else 18), val_floor),
-                               (hue_hi, 255, 255))
-        # 2. Excess Green index (adaptive threshold for drone)
-        exg = _compute_vegetation_index(image)
-        if drone_mode:
+            # Step 1: ExG → vegetation region mask
+            exg = _compute_vegetation_index(image)
             exg_thresh = compute_adaptive_green_threshold(
-                image, base_min=8, percentile=3)
-        else:
-            exg_thresh = spec.get("excess_green_min", 12)
-        exg_mask = cv2.inRange(exg, exg_thresh, 255)
-        # 3. CGI (Chlorophyll Green-Red Index) — lower threshold for aerial
-        cgi = _compute_cgi(image)
-        cgi_thresh = 140 if drone_mode else 165
-        cgi_mask = cv2.inRange(cgi, cgi_thresh, 255)
-        # 4. LAB a-channel (green<128<red) — wider range for drone
-        lab_hi = 130 if drone_mode else 118
-        lab_green = cv2.inRange(lab[:, :, 1], 0, lab_hi)
-        # 5. YCrCb: green has low Cr
-        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        ycrcb_hi = 145 if drone_mode else 130
-        ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, ycrcb_hi)
+                image, base_min=15, percentile=5)
+            exg_mask = cv2.inRange(exg, exg_thresh, 255)
 
-        # Fuse: HSV is required, at least N of {ExG, CGI, LAB, YCrCb} must agree.
-        # Very blurry frames lose colour discrimination, so require fewer signals.
-        # Drone mode: relaxed signal count due to aerial noise.
-        if drone_mode:
-            required_signals = 1
-        else:
-            required_signals = 2 if blur_level < 0.75 else 1
+            # Dilate to connect nearby patches and cover leaf edges
+            dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+            exg_region = cv2.dilate(exg_mask, dilate_k)
+
+            # Step 2: Run standard HSV+multi-signal detection
+            adaptive_hue = compute_adaptive_hsv_green_range(image, base_hue=(30, 95))
+            hue_lo = max(20, adaptive_hue[0])
+            hue_hi = min(110, adaptive_hue[1])
+            hsv_mask = cv2.inRange(hsv, (hue_lo, 10, 5), (hue_hi, 255, 255))
+
+            lab_green = cv2.inRange(lab[:, :, 1], 0, 130)
+            cgi = _compute_cgi(image)
+            cgi_mask = cv2.inRange(cgi, 140, 255)
+            ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+            ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, 145)
+
+            vegetation = cv2.bitwise_or(cv2.bitwise_or(exg_mask, cgi_mask),
+                                        cv2.bitwise_or(lab_green, ycrcb_green))
+            signals = np.zeros(hsv.shape[:2], np.uint8)
+            signals = cv2.add(signals, (exg_mask > 0).astype(np.uint8))
+            signals = cv2.add(signals, (cgi_mask > 0).astype(np.uint8))
+            signals = cv2.add(signals, (lab_green > 0).astype(np.uint8))
+            signals = cv2.add(signals, (ycrcb_green > 0).astype(np.uint8))
+            multi_signal = cv2.inRange(signals, 1, 255)
+
+            # Step 3: Combine — vegetation signal constrained to ExG region
+            combined = cv2.bitwise_and(
+                hsv_mask,
+                cv2.bitwise_or(multi_signal, vegetation))
+            combined = cv2.bitwise_and(combined, exg_region)
+
+            # Step 4: Cleanup
+            combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,
+                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+            combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,
+                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+
+            # Sky exclusion
+            if sky_mask is not None:
+                combined = cv2.bitwise_and(combined, cv2.bitwise_not(sky_mask))
+
+            # Foreground constraint
+            if fg_mask is not None:
+                combined = cv2.bitwise_and(combined, fg_mask)
+
+            # Fill holes
+            combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,
+                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+            return combined
+
+        # --- Normal mode: HSV + ExG + CGI + LAB + YCrCb ---
+        relax = max(0.0, (blur_level - 0.5) * 2.0)
+        sat_floor = int(max(25, spec["leaf_saturation_min"] - relax * 25))
+        hsv_mask = cv2.inRange(hsv,
+                               (spec["leaf_hue"][0], max(sat_floor, 25), spec["leaf_value_min"]),
+                               (spec["leaf_hue"][1], 255, 255))
+        exg = _compute_vegetation_index(image)
+        exg_mask = cv2.inRange(exg, spec.get("excess_green_min", 12), 255)
+        cgi = _compute_cgi(image)
+        cgi_mask = cv2.inRange(cgi, 165, 255)
+        lab_green = cv2.inRange(lab[:, :, 1], 0, 118)
+        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        ycrcb_green = cv2.inRange(ycrcb[:, :, 1], 0, 130)
+
+        required_signals = 2 if blur_level < 0.75 else 1
         vegetation = cv2.bitwise_or(cv2.bitwise_or(exg_mask, cgi_mask),
                                     cv2.bitwise_or(lab_green, ycrcb_green))
         signals = np.zeros(hsv.shape[:2], np.uint8)
@@ -1637,49 +1667,36 @@ class Analyzer:
         signals = cv2.add(signals, (lab_green > 0).astype(np.uint8))
         signals = cv2.add(signals, (ycrcb_green > 0).astype(np.uint8))
         multi_signal = cv2.inRange(signals, required_signals, 255)
-
         combined = cv2.bitwise_and(hsv_mask, cv2.bitwise_or(multi_signal, vegetation))
 
         # Morphological cleanup with elliptical kernel
-        # Drone mode: smaller kernels to preserve fragmented aerial foliage
-        edge_k = max(3, spec.get("edge_close_kernel", 5) - (1 if blur_level >= 0.5 or drone_mode else 0))
+        edge_k = max(3, spec.get("edge_close_kernel", 5) - (1 if blur_level >= 0.5 else 0))
         ekernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_k, edge_k))
-        if not drone_mode:
-            combined = cv2.morphologyEx(combined, cv2.MORPH_DILATE, ekernel)
-        clean_size = max(3, spec.get("adaptive_blur", 5))
-        if drone_mode:
-            clean_size = max(3, clean_size - 1)
-        combined = self._clean(combined, size=clean_size)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_DILATE, ekernel)
+        combined = self._clean(combined, size=max(3, spec.get("adaptive_blur", 5)))
 
-        # Scale-aware secondary cleanup (skip OPEN for drone to keep small regions)
+        # Scale-aware secondary cleanup
         h, w = image.shape[:2]
         mk_size = max(3, min(7, int(min(h, w) / 150)))
         mk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mk_size, mk_size))
-        if not drone_mode:
-            combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, mk)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, mk)
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, mk)
 
         # Suppress very dark pixels (likely noise/shadow)
-        v_floor = 10 if drone_mode else 15
-        v_suppress = cv2.inRange(hsv[:, :, 2], v_floor, 255)
+        v_suppress = cv2.inRange(hsv[:, :, 2], 15, 255)
         combined = cv2.bitwise_and(combined, v_suppress)
 
         # Foreground constraint: if fg_mask provided, only keep leaf within foreground
         if fg_mask is not None:
             combined = cv2.bitwise_and(combined, fg_mask)
 
-        # Sky exclusion: for drone images, remove pixels classified as sky
-        if drone_mode and sky_mask is not None:
-            combined = cv2.bitwise_and(combined, cv2.bitwise_not(sky_mask))
-
         # Edge-guided refinement (skipped in blurry frames to preserve soft edges)
         if edge_refine and spec.get("edge_refine", True):
             combined = _edge_refine_mask(image, combined)
 
-        # Fill small holes (larger kernel for drone to merge fragmented regions)
-        fill_k = 9 if drone_mode else 7
+        # Fill small holes
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,
-                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fill_k, fill_k)))
+                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
         return combined
 
     def _build_fruit_mask(self, image, hsv, lab, leaf_mask, spec, fg_mask=None,
