@@ -1,6 +1,6 @@
 # Optional research/training dependencies; not needed for Raspberry Pi operation.
 lightgbm==4.7.0
-pandas==2.2.2
+pandas==3.0.5
 scikit-learn==1.9.0
 scikit-image==0.26.0
 matplotlib==3.11.1
