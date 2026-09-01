@@ -37,7 +37,21 @@ def _error(msg, hint=None, details=None):
 def resources(args):
     config = load_runtime_config(args.config)
     drone = getattr(args, "drone", False)
-    return Analyzer(config, resolution_mode="auto", drone_mode=drone), Store(args.database), config
+    upscale = getattr(args, "upscale", False)
+    upscaler = None
+    if upscale:
+        from src.upscale import ImageUpscaler
+        try:
+            upscaler = ImageUpscaler(
+                model=getattr(args, "upscale_model", "realesrgan-x4plus"),
+                scale=getattr(args, "upscale_scale", 2),
+                threshold=getattr(args, "upscale_threshold", 900),
+            )
+        except Exception:
+            upscaler = None
+    analyzer = Analyzer(config, resolution_mode="auto", drone_mode=drone,
+                        upscaler=upscaler, upscale=upscale)
+    return analyzer, Store(args.database), config
 
 def show(result):
     clean = {k: v for k, v in result.items() if not isinstance(v, np.ndarray)}
@@ -1053,6 +1067,12 @@ def gui(args):
                                 style="TCheckbutton")
     btn_soil.pack(side="left", padx=3)
 
+    # AI Upscale on/off toggle (in toolbar) + threshold/model picker
+    upscale_enabled = tk.BooleanVar(value=bool(getattr(args, "upscale", False)))
+    btn_up = ttk.Checkbutton(toolbar, text="  AI Upscale  ", variable=upscale_enabled,
+                              style="TCheckbutton")
+    btn_up.pack(side="left", padx=3)
+
     # ---- RIGHT: Parameter panel (card)
     param_frame = ttk.LabelFrame(right, text=" Detection Parameters ", style="Card.TLabelframe")
     param_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
@@ -1542,6 +1562,15 @@ def gui(args):
 
     def do_analyze(image_bgr, source, path=None):
         apply_slider_config()
+        # Reflect AI Upscale toggle state
+        if upscale_enabled.get():
+            analyzer.set_upscale(
+                enabled=True,
+                model=getattr(args, "upscale_model", "realesrgan-x4plus"),
+                scale=getattr(args, "upscale_scale", 2),
+                threshold=getattr(args, "upscale_threshold", 900))
+        else:
+            analyzer.set_upscale(enabled=False)
         set_status("Analysing...")
         persist = mode_var.get() == "experiment"
         result, output_path = save_observation(analyzer, store if persist else None,
@@ -1956,7 +1985,7 @@ def _risk_color(risk):
 
 
 def parser():
-    common=argparse.ArgumentParser(add_help=False); common.add_argument("--config",default=str(ROOT/"config"/"runtime.yaml")); common.add_argument("--database",default=str(ROOT/"data"/"database"/"olivevision.db")); common.add_argument("--output",default=str(ROOT/"outputs"/"observations")); common.add_argument("--verbose",action="store_true")
+    common=argparse.ArgumentParser(add_help=False); common.add_argument("--config",default=str(ROOT/"config"/"runtime.yaml")); common.add_argument("--database",default=str(ROOT/"data"/"database"/"olivevision.db")); common.add_argument("--output",default=str(ROOT/"outputs"/"observations")); common.add_argument("--verbose",action="store_true"); common.add_argument("--upscale",action="store_true",help="AI-upscale low-resolution images before detection"); common.add_argument("--upscale-threshold",type=int,default=900,help="upscale images below this width/height (default 900)"); common.add_argument("--upscale-model",default="realesrgan-x4plus",help="upscale model (realesrgan-x4plus, realesr-animevideov3, realesrgan-x4plus-anime)"); common.add_argument("--upscale-scale",type=int,default=2,help="upscale ratio (2, 3, or 4; default 2)")
     p=argparse.ArgumentParser(description="OliveVision: Raspberry Pi friendly local olive monitoring"); sub=p.add_subparsers(dest="command",required=True)
     x=sub.add_parser("analyze",parents=[common],help="analyse one image and save its record"); x.add_argument("image"); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.add_argument("--drone",action="store_true",help="enable low-resolution (drone/aerial) detection mode"); x.set_defaults(func=analyze_file)
     x=sub.add_parser("capture",parents=[common],help="capture and analyse one camera frame"); x.add_argument("--camera",type=int,default=0); x.add_argument("--explain",action="store_true",help="print a text explanation of why objects were detected"); x.add_argument("--diag",action="store_true",help="print pipeline diagnostics (rejections, signal coverage)"); x.add_argument("--no-soil-moisture",action="store_true",help="skip soil moisture integration"); x.add_argument("--drone",action="store_true",help="enable low-resolution (drone/aerial) detection mode"); x.set_defaults(func=capture)

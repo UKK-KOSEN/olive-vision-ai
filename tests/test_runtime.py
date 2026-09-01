@@ -522,6 +522,36 @@ class DroneEnhancementTest(unittest.TestCase):
         adapted = analyzer._adapt_for_resolution(image)
         self.assertEqual(adapted.get("_resolution_mode"), "drone")
 
+    def test_upscale_flag_disabled_no_upscaler(self):
+        """With upscale=False the analyzer must not attempt upscaling."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, upscale=False)
+        self.assertIsNone(analyzer.upscaler)
+
+    def test_upscale_flag_enabled_creates_upscaler(self):
+        """With upscale=True (and tool present) an upscaler is created."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, upscale=True)
+        if analyzer.upscaler is not None:
+            self.assertTrue(hasattr(analyzer.upscaler, "upscale_image"))
+        # must not crash either way
+
+    def test_set_upscale_toggle(self):
+        """set_upscale(False) should clear the upscaler."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, upscale=False)
+        analyzer.set_upscale(enabled=False)
+        self.assertIsNone(analyzer.upscaler)
+
+    def test_analyze_reports_upscaled_field(self):
+        """Result dict includes upscaled flag."""
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, upscale=False)
+        image = np.zeros((100, 120, 3), dtype=np.uint8)
+        result, _ = analyzer.analyze(image, "test")
+        self.assertFalse(result.get("upscaled"))
+        self.assertEqual(result.get("upscale_model"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

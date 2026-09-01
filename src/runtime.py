@@ -1488,7 +1488,7 @@ class _CentroidTracker:
 
 class Analyzer:
     def __init__(self, config: dict, resolution_mode: str = "auto",
-                 drone_mode: bool = False):
+                 drone_mode: bool = False, upscaler=None, upscale: bool = False):
         """Initialize the analyzer.
 
         Args:
@@ -1500,10 +1500,39 @@ class Analyzer:
             drone_mode: True to enable aerial/drone detection enhancements
                        (wider HSV, relaxed thresholds, adapted morphology).
                        Independent of resolution_mode.
+            upscaler: Optional ImageUpscaler instance. If None and upscale
+                      is True, a default one is created.
+            upscale: If True, automatically AI-upscale low-res images
+                     before detection.
         """
         self.config = config
         self.resolution_mode = resolution_mode
         self.drone_mode = drone_mode
+        self.upscaler = upscaler
+        if upscale and upscaler is None:
+            from .upscale import ImageUpscaler
+            try:
+                self.upscaler = ImageUpscaler()
+            except Exception:
+                self.upscaler = None
+        elif not upscale:
+            self.upscaler = None
+        self.was_upscaled = False
+
+    def set_upscale(self, enabled: bool = True, model: str = "realesrgan-x4plus",
+                    scale: int = 2, threshold: int = 900):
+        """Enable/disable AI upscaling on an existing analyzer (used by the GUI
+        toggle so users can turn it on/off without recreating the analyzer)."""
+        if not enabled:
+            self.upscaler = None
+            return
+        if self.upscaler is not None:
+            return
+        from .upscale import ImageUpscaler
+        try:
+            self.upscaler = ImageUpscaler(model=model, scale=scale, threshold=threshold)
+        except Exception:
+            self.upscaler = None
 
     def _adapt_for_resolution(self, image: np.ndarray) -> dict:
         """Return config scaled for the input image resolution."""
@@ -1956,6 +1985,12 @@ class Analyzer:
 
     def analyze(self, image: np.ndarray, source: str,
                 image_path: Optional[str] = None) -> Tuple[dict, np.ndarray]:
+        self.was_upscaled = False
+        if self.upscaler is not None and self.upscaler.needs_upscale(image):
+            upscaled = self.upscaler.upscale_image(image)
+            if upscaled is not image and upscaled.shape[:2] != image.shape[:2]:
+                image = upscaled
+                self.was_upscaled = True
         image = self._resize(image)
         adapted = self._adapt_for_resolution(image)
         spec = adapted["detection"]
@@ -2236,6 +2271,8 @@ class Analyzer:
             "tree_id": tree_id,
             "resolution_mode": adapted.get("_resolution_mode", "normal"),
             "resolution_scale": adapted.get("_resolution_scale", 1.0),
+            "upscaled": bool(self.was_upscaled),
+            "upscale_model": (self.upscaler.model if self.upscaler is not None and self.was_upscaled else ""),
             "leaf_count": leaf_count, "fruit_count": fruit_count, "green_coverage": green_pct,
             "image_width": int(image.shape[1]), "image_height": int(image.shape[0]),
             "leaf_color_stage": leaf_stage, "leaf_senescence": leaf_senes,
@@ -2944,8 +2981,18 @@ class VideoAnalyzer:
                       frame_interval: Optional[int] = None,
                       progress_callback=None, persist: bool = False) -> dict:
         """Analyze an mp4/avi video. Returns summary dict."""
+        # Upscaling is disabled during video analysis: the annotated output
+        # VideoWriter is sized to the source frames, and per-frame upscaling
+        # would resize the output and break frame tracking/IDs. Re-enable it
+        # afterwards so still-image analysis is unaffected.
+        had_upscaler = self.analyzer.upscaler
+        if had_upscaler is not None:
+            self.analyzer.upscaler = None
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
+            if had_upscaler is not None:
+                self.analyzer.upscaler = had_upscaler
             raise RuntimeError(f"Cannot open video: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -3060,6 +3107,9 @@ class VideoAnalyzer:
 
         cap.release()
         writer.release()
+
+        if had_upscaler is not None:
+            self.analyzer.upscaler = had_upscaler
 
         # Save timeline JSON
         timeline_path = out_dir / "timeline.json"

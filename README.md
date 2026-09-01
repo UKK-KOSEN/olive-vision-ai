@@ -70,6 +70,41 @@ python olivevision.py --monitor --interval 60
 | `olivevision.py video <file>` | Analyze video file |
 | `olivevision.py export --format csv` | Export data to CSV |
 
+## AI Upscaling (drone / low-resolution images)
+
+Low-resolution aerial images (typically below ~900px per side) can be
+AI-upscaled before detection to improve leaf/fruit recall. This wraps the
+[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) ncnn Vulkan CLI as an
+external subprocess, so no extra Python dependencies are required.
+
+The binary + models are **not** committed to the repo (they total ~53 MB).
+Install them once:
+
+```powershell
+# Download and extract into tools/ (Vulkan-capable GPU recommended)
+# https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip
+# -> extract to: tools/realesrgan-ncnn-vulkan/
+```
+
+If the tool is missing, upscaling is gracefully skipped (detection proceeds
+on the original image).
+
+Use it from the CLI:
+
+```powershell
+# Auto-upscale low-res images before analysis
+python olivevision.py analyze drone.png --drone --upscale
+
+# Tune the model / scale / threshold
+python olivevision.py analyze drone.png --drone --upscale `
+    --upscale-model realesrgan-x4plus --upscale-scale 2 --upscale-threshold 900
+```
+
+Available `--upscale-model` values: `realesrgan-x4plus`, `realesr-animevideov3`,
+`realesrgan-x4plus-anime`, `realesrnet-x4plus`.
+
+In the GUI, tick the **AI Upscale** toggle in the toolbar.
+
 ## Configuration
 
 All parameters are configurable via `config/runtime.yaml`:

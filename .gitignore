@@ -31,3 +31,6 @@ outputs/
 
 # Config overrides (user-specific)
 config/runtime.local.yaml
+
+# AI upscaler binary + models (download separately, see README)
+tools/realesrgan-ncnn-vulkan/
