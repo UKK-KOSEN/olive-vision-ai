@@ -1508,16 +1508,14 @@ class Analyzer:
         self.config = config
         self.resolution_mode = resolution_mode
         self.drone_mode = drone_mode
+        self.was_upscaled = False
         self.upscaler = upscaler
-        if upscale and upscaler is None:
+        if self.upscaler is None and upscale:
             from .upscale import ImageUpscaler
             try:
                 self.upscaler = ImageUpscaler()
             except Exception:
                 self.upscaler = None
-        elif not upscale:
-            self.upscaler = None
-        self.was_upscaled = False
 
     def set_upscale(self, enabled: bool = True, model: str = "realesrgan-x4plus",
                     scale: int = 2, threshold: int = 900):
@@ -2981,18 +2979,8 @@ class VideoAnalyzer:
                       frame_interval: Optional[int] = None,
                       progress_callback=None, persist: bool = False) -> dict:
         """Analyze an mp4/avi video. Returns summary dict."""
-        # Upscaling is disabled during video analysis: the annotated output
-        # VideoWriter is sized to the source frames, and per-frame upscaling
-        # would resize the output and break frame tracking/IDs. Re-enable it
-        # afterwards so still-image analysis is unaffected.
-        had_upscaler = self.analyzer.upscaler
-        if had_upscaler is not None:
-            self.analyzer.upscaler = None
-
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            if had_upscaler is not None:
-                self.analyzer.upscaler = had_upscaler
             raise RuntimeError(f"Cannot open video: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -3010,11 +2998,16 @@ class VideoAnalyzer:
         frame_dir = out_dir / "frames"
         frame_dir.mkdir(exist_ok=True)
 
-        # Output annotated video
+        # Output annotated video. The writer is created lazily on the first
+        # analysed frame because AI upscaling can change the frame size
+        # relative to the source video (e.g. 640x360 -> 1280x720). All source
+        # frames share the same size, so the output size is constant once the
+        # first frame decides it (upscale is deterministic for a given input).
         out_fps = self.video_cfg.get("output_fps", 5)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         ann_path = out_dir / "annotated.mp4"
-        writer = cv2.VideoWriter(str(ann_path), fourcc, out_fps, (width, height))
+        writer: Optional[cv2.VideoWriter] = None
+        writer_size: Optional[Tuple[int, int]] = None
 
         self.tracker_leaves = _CentroidTracker(self.video_cfg.get("track_max_age", 30))
         self.tracker_fruits = _CentroidTracker(self.video_cfg.get("track_max_age", 30))
@@ -3034,6 +3027,19 @@ class VideoAnalyzer:
                 break
 
             result, annotated = self.analyzer.analyze(frame, f"video:{Path(video_path).name}")
+
+            # Ensure the writer matches the annotated frame size (upscaling
+            # can change it); create on first frame or recreate if changed.
+            ah, aw = annotated.shape[:2]
+            if writer is None:
+                writer = cv2.VideoWriter(str(ann_path), fourcc, out_fps, (aw, ah))
+                writer_size = (aw, ah)
+            elif (aw, ah) != writer_size:
+                writer.release()
+                self.logger.info("Annotated frame size changed (%s), recreating writer",
+                                 f"{aw}x{ah}")
+                writer = cv2.VideoWriter(str(ann_path), fourcc, out_fps, (aw, ah))
+                writer_size = (aw, ah)
 
             # Save frame result
             frame_path = frame_dir / f"frame_{frame_idx:06d}.jpg"
@@ -3093,8 +3099,8 @@ class VideoAnalyzer:
 
             # Draw frame counter on annotated
             info = f"Frame {frame_idx} | T={timestamp_sec:.1f}s | L:{result['leaf_count']} F:{result['fruit_count']}"
-            cv2.putText(annotated, info, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-            cv2.putText(annotated, info, (12, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30), 1)
+            cv2.putText(annotated, info, (12, ah - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+            cv2.putText(annotated, info, (12, ah - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30), 1)
             writer.write(annotated)
 
             analyzed_count += 1
@@ -3106,10 +3112,8 @@ class VideoAnalyzer:
             frame_idx += 1
 
         cap.release()
-        writer.release()
-
-        if had_upscaler is not None:
-            self.analyzer.upscaler = had_upscaler
+        if writer is not None:
+            writer.release()
 
         # Save timeline JSON
         timeline_path = out_dir / "timeline.json"

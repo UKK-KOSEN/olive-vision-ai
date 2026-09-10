@@ -406,6 +406,42 @@ class RuntimeTest(unittest.TestCase):
             for r in rows:
                 self.assertTrue(r.get("source", "").startswith("video:"))
 
+    def test_video_analyzer_upscale_resizes_output(self):
+        """When the analyzer has an upscaler, annotated output should be
+        written at the (larger) upscaled frame size, not crash the writer."""
+        from src.runtime import VideoAnalyzer, Analyzer as VAnalyzer
+        from src.upscale import ImageUpscaler
+        with tempfile.TemporaryDirectory() as tmp:
+            video_path = Path(tmp) / "small.mp4"
+            h, w = 100, 140
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(video_path), fourcc, 10.0, (w, h))
+            for _ in range(3):
+                green = np.zeros((h, w, 3), dtype=np.uint8)
+                green[:, 20:w - 20, 1] = 180
+                writer.write(green)
+            writer.release()
+
+            upscaler = ImageUpscaler()
+            if not upscaler.available:
+                self.skipTest("realesrgan-ncnn-vulkan not installed")
+
+            analyzer = VAnalyzer(load_runtime_config(), upscaler=upscaler)
+            va = VideoAnalyzer(analyzer, load_runtime_config())
+            out_dir = Path(tmp) / "output"
+            summary = va.analyze_video(str(video_path), str(out_dir),
+                                       frame_interval=1)
+
+            annotated = out_dir / "annotated.mp4"
+            self.assertTrue(annotated.exists())
+            cap = cv2.VideoCapture(str(annotated))
+            out_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            out_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            # 2x upscale of 140x100 -> 280x200
+            self.assertGreaterEqual(out_w, w * 2)
+            self.assertGreaterEqual(out_h, h * 2)
+
 
 class ResolutionAdaptationTest(unittest.TestCase):
     """Tests for resolution-adaptive parameter scaling."""

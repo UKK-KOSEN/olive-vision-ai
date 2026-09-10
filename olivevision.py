@@ -1073,6 +1073,38 @@ def gui(args):
                               style="TCheckbutton")
     btn_up.pack(side="left", padx=3)
 
+    # Upscale settings frame (shown/hidden by the toggle)
+    upscale_frame = ttk.Frame(toolbar)
+
+    upscale_model_var = tk.StringVar(value=getattr(args, "upscale_model", "realesrgan-x4plus"))
+    ttk.Label(upscale_frame, text="Model:", style="Dim.TLabel").pack(side="left", padx=(8, 2))
+    model_combo = ttk.Combobox(upscale_frame, textvariable=upscale_model_var, width=24,
+                                values=["realesrgan-x4plus", "realesr-animevideov3",
+                                        "realesrgan-x4plus-anime", "realesrnet-x4plus"],
+                                state="readonly")
+    model_combo.pack(side="left", padx=(0, 6))
+
+    upscale_scale_var = tk.IntVar(value=getattr(args, "upscale_scale", 2))
+    ttk.Label(upscale_frame, text="Scale:", style="Dim.TLabel").pack(side="left", padx=(0, 2))
+    scale_combo = ttk.Combobox(upscale_frame, textvariable=upscale_scale_var, width=3,
+                                values=[2, 3, 4], state="readonly")
+    scale_combo.pack(side="left", padx=(0, 6))
+
+    upscale_threshold_var = tk.IntVar(value=getattr(args, "upscale_threshold", 900))
+    ttk.Label(upscale_frame, text="<", style="Dim.TLabel").pack(side="left")
+    thresh_spin = ttk.Spinbox(upscale_frame, from_=256, to=4096, textvariable=upscale_threshold_var,
+                               width=5)
+    thresh_spin.pack(side="left", padx=(0, 2))
+    ttk.Label(upscale_frame, text="px", style="Dim.TLabel").pack(side="left")
+
+    def _toggle_upscale_frame(*_args):
+        if upscale_enabled.get():
+            upscale_frame.pack(side="left", padx=(0, 8))
+        else:
+            upscale_frame.pack_forget()
+    upscale_enabled.trace_add("write", _toggle_upscale_frame)
+    _toggle_upscale_frame()
+
     # ---- RIGHT: Parameter panel (card)
     param_frame = ttk.LabelFrame(right, text=" Detection Parameters ", style="Card.TLabelframe")
     param_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
@@ -1566,9 +1598,9 @@ def gui(args):
         if upscale_enabled.get():
             analyzer.set_upscale(
                 enabled=True,
-                model=getattr(args, "upscale_model", "realesrgan-x4plus"),
-                scale=getattr(args, "upscale_scale", 2),
-                threshold=getattr(args, "upscale_threshold", 900))
+                model=upscale_model_var.get(),
+                scale=upscale_scale_var.get(),
+                threshold=upscale_threshold_var.get())
         else:
             analyzer.set_upscale(enabled=False)
         set_status("Analysing...")
@@ -1595,8 +1627,9 @@ def gui(args):
             lcolor = result.get("leaf_color_stage", "")
             fmat = result.get("fruit_maturity", "")
             mode = result.get("detect_mode", "")
+            up = " [upscaled]" if result.get("upscaled") else ""
             saved = "saved" if persist else "not saved (single-shot)"
-            write_log(f"[{ts}] L={lc} F={fc} G={gc}% Leaf={lcolor} Fruit={fmat} Mode={mode} ({saved})")
+            write_log(f"[{ts}] L={lc} F={fc} G={gc}% Leaf={lcolor} Fruit={fmat} Mode={mode}{up} ({saved})")
             history_log.appendleft(result)
 
             # Use masks from result for histogram and overlay
@@ -1659,6 +1692,15 @@ def gui(args):
             set_status("Analysing video...")
             cancel_event.clear()
             try:
+                # Reflect AI Upscale toggle state (same as do_analyze)
+                if upscale_enabled.get():
+                    analyzer.set_upscale(
+                        enabled=True,
+                        model=upscale_model_var.get(),
+                        scale=upscale_scale_var.get(),
+                        threshold=upscale_threshold_var.get())
+                else:
+                    analyzer.set_upscale(enabled=False)
                 va = VideoAnalyzer(analyzer, config, store=store)
                 def on_progress(done, total, frame_result):
                     set_status(f"Video: {done}/{total} frames")
