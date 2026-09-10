@@ -588,6 +588,23 @@ class DroneEnhancementTest(unittest.TestCase):
         self.assertFalse(result.get("upscaled"))
         self.assertEqual(result.get("upscale_model"), "")
 
+    def test_analyze_keeps_original_for_qr_when_upscaled(self):
+        """When upscaling runs, analyze() must retain the original image for
+        QR fallback instead of only looking at the upscaled frame."""
+        from src.upscale import ImageUpscaler
+        upscaler = ImageUpscaler()
+        if not upscaler.available:
+            self.skipTest("realesrgan-ncnn-vulkan not installed")
+        config = load_runtime_config(Path("config/runtime.yaml"))
+        analyzer = Analyzer(config, upscaler=upscaler)
+        # A low-res image that needs upscaling.
+        image = np.zeros((100, 120, 3), dtype=np.uint8)
+        image[40:70, 30:90, :] = (0, 180, 0)  # green patch
+        analyzer.analyze(image, "test")
+        self.assertTrue(analyzer.was_upscaled)
+        # The retained original must match the pre-upscale size.
+        self.assertEqual(analyzer._original_bgr.shape[:2], (100, 120))
+
 
 if __name__ == "__main__":
     unittest.main()

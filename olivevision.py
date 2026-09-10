@@ -37,7 +37,10 @@ def _error(msg, hint=None, details=None):
 def resources(args):
     config = load_runtime_config(args.config)
     drone = getattr(args, "drone", False)
-    upscale = getattr(args, "upscale", False)
+    # Drone mode enables low-resolution aerial images, so AI upscaling is
+    # turned on automatically unless the user explicitly disables it.
+    upscale_default = bool(getattr(args, "upscale", False)) or drone
+    upscale = upscale_default
     upscaler = None
     if upscale:
         from src.upscale import ImageUpscaler
@@ -1067,11 +1070,24 @@ def gui(args):
                                 style="TCheckbutton")
     btn_soil.pack(side="left", padx=3)
 
+    # Drone mode toggle: aerial enhancements + auto-enable AI upscale
+    drone_mode_var = tk.BooleanVar(value=bool(getattr(args, "drone", False)))
+    btn_drone = ttk.Checkbutton(toolbar, text="  Drone Mode  ", variable=drone_mode_var,
+                                style="TCheckbutton")
+    btn_drone.pack(side="left", padx=3)
+
     # AI Upscale on/off toggle (in toolbar) + threshold/model picker
-    upscale_enabled = tk.BooleanVar(value=bool(getattr(args, "upscale", False)))
+    upscale_enabled = tk.BooleanVar(value=bool(getattr(args, "upscale", False))
+                                            or drone_mode_var.get())
     btn_up = ttk.Checkbutton(toolbar, text="  AI Upscale  ", variable=upscale_enabled,
                               style="TCheckbutton")
     btn_up.pack(side="left", padx=3)
+
+    def _drone_mode_changed(*_args):
+        # Turning drone mode on auto-enables upscaling (low-res aerial input).
+        if drone_mode_var.get():
+            upscale_enabled.set(True)
+    drone_mode_var.trace_add("write", _drone_mode_changed)
 
     # Upscale settings frame (shown/hidden by the toggle)
     upscale_frame = ttk.Frame(toolbar)
@@ -1594,6 +1610,8 @@ def gui(args):
 
     def do_analyze(image_bgr, source, path=None):
         apply_slider_config()
+        # Reflect Drone Mode toggle state
+        analyzer.drone_mode = drone_mode_var.get()
         # Reflect AI Upscale toggle state
         if upscale_enabled.get():
             analyzer.set_upscale(
@@ -1692,7 +1710,8 @@ def gui(args):
             set_status("Analysing video...")
             cancel_event.clear()
             try:
-                # Reflect AI Upscale toggle state (same as do_analyze)
+                # Reflect Drone Mode + AI Upscale toggle state (same as do_analyze)
+                analyzer.drone_mode = drone_mode_var.get()
                 if upscale_enabled.get():
                     analyzer.set_upscale(
                         enabled=True,
@@ -2038,7 +2057,7 @@ def parser():
     x=sub.add_parser("trees",parents=[common],help="list all detected trial tree IDs"); x.set_defaults(func=list_trees)
     x=sub.add_parser("video",parents=[common],help="analyse an mp4/avi video frame by frame"); x.add_argument("video"); x.add_argument("--interval",type=int,default=10,help="analyse every Nth frame"); x.set_defaults(func=analyze_video_cli)
     x=sub.add_parser("soil",parents=[common],help="display soil moisture data"); x.add_argument("soil_cmd",nargs="?",default="latest",choices=["latest","history","stats","status"],help="soil moisture sub-command (default: latest)"); x.add_argument("--hours",type=int,default=24,help="hours of history to show (default 24)"); x.set_defaults(func=soil)
-    x=sub.add_parser("gui",parents=[common],help="launch the local desktop GUI"); x.add_argument("--camera",type=int,default=0); x.set_defaults(func=gui)
+    x=sub.add_parser("gui",parents=[common],help="launch the local desktop GUI"); x.add_argument("--camera",type=int,default=0); x.add_argument("--drone",action="store_true",help="enable drone/aerial detection mode in the GUI"); x.set_defaults(func=gui)
     return p
 
 if __name__=="__main__":

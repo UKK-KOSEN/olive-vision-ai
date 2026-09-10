@@ -1984,11 +1984,14 @@ class Analyzer:
     def analyze(self, image: np.ndarray, source: str,
                 image_path: Optional[str] = None) -> Tuple[dict, np.ndarray]:
         self.was_upscaled = False
+        original_bgr = image
         if self.upscaler is not None and self.upscaler.needs_upscale(image):
             upscaled = self.upscaler.upscale_image(image)
             if upscaled is not image and upscaled.shape[:2] != image.shape[:2]:
+                original_bgr = image.copy()
                 image = upscaled
                 self.was_upscaled = True
+        self._original_bgr = original_bgr
         image = self._resize(image)
         adapted = self._adapt_for_resolution(image)
         spec = adapted["detection"]
@@ -2216,9 +2219,14 @@ class Analyzer:
         sub = f"Green:{gp}%  Leaf:{leaf_stage}  Fruit:{fruit_mat}  Mode:{mode_label}"
         cv2.putText(annotated, sub, (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
         cv2.putText(annotated, sub, (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (30, 30, 30), 1)
-        # QR tree ID annotation.
+        # QR tree ID annotation. Try the original (pre-upscale) image first:
+        # upscaling can smear the high-contrast QR pattern, so the original
+        # low-res frame is the better primary candidate. If that fails, retry
+        # on the (upscaled/resized) working image.
         if spec.get("qr_detection", True):
-            tree_id = _detect_qr_tree_id(image)
+            tree_id = _detect_qr_tree_id(self._original_bgr)
+            if tree_id is None and self._original_bgr is not image:
+                tree_id = _detect_qr_tree_id(image)
         else:
             tree_id = None
         if tree_id:
